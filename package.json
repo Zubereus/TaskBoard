@@ -1,0 +1,81 @@
+{
+  "name": "taskboard",
+  "version": "1.0.0",
+  "description": "A desktop to-do app: Vue renderer, Electron shell, Node.js file-system backend.",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev:vite": "vite",
+    "dev:electron": "cross-env NODE_ENV=development electron .",
+    "dev": "concurrently -k -n VITE,ELECTRON -c blue,magenta \"npm run dev:vite\" \"wait-on http://127.0.0.1:5173 && npm run dev:electron\"",
+    "dev:test": "concurrently -k -n VITE,HOST,CLIENT -c blue,magenta,green \"npm run dev:vite\" \"wait-on http://127.0.0.1:5173 && cross-env NODE_ENV=development TASKBOARD_DEVTEST_INSTANCE=host electron .\" \"wait-on http://127.0.0.1:5173 && cross-env NODE_ENV=development TASKBOARD_DEVTEST_INSTANCE=client electron .\"",
+    "build": "vite build",
+    "test": "vitest run",
+    "start": "npm run build && cross-env NODE_ENV=production electron .",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable --x64"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.2.0",
+    "wait-on": "^7.2.0"
+    ,"vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "docx": "^9.13.0",
+    "googleapis": "^140.0.1",
+    "vue": "^3.4.21",
+    "ws": "^8.22.0"
+  },
+  "build": {
+    "appId": "com.taskboard.app",
+    "productName": "TaskBoard",
+    "icon": "build/icon.ico",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "data",
+        "to": "app-data-seed"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "taskboard-notification.png"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
