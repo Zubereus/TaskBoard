@@ -2,6 +2,8 @@
 
 A local-first desktop task manager built with Vue 3, Electron, and Node.js. Organize deadlines, priorities, and team assignments in a Vietnamese-language interface, with optional LAN sync and Google Calendar integration.
 
+![TaskBoard dashboard showing team tasks, due dates, and priorities](screenshots/taskboard-dashboard.png)
+
 The app is built on this stack:
 
 ```
