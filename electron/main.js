@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu, ipcMain, shell, Notification, dialog, Tray, nativeImage } = require('electron')
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const { JsonCollection } = require('../server/db')
@@ -6,6 +7,8 @@ const { completionPatch } = require('../server/task-completion')
 const gcal = require('../server/google-calendar')
 const { LanSyncManager, getLocalIpAddresses, DEFAULT_PORT } = require('../server/lan-sync')
 const { generateTasksDocx } = require('../server/docx-export')
+const { reconcilePersonProfile } = require('../server/person-profile')
+const { isTaskAssignedTo } = require('../server/notification-target')
 
 const isDev = process.env.NODE_ENV === 'development'
 const devTestInstance = isDev && ['host', 'client'].includes(process.env.TASKBOARD_DEVTEST_INSTANCE)
@@ -80,6 +83,7 @@ const notificationStateStore = new JsonCollection(dataDir, 'notification-state')
 
 // Initialize LAN sync engine
 const lanSync = new LanSyncManager({ tasks, employees, settings: settingsStore })
+let personProfilePromise = null
 
 async function getSettings() {
   const all = await settingsStore.list()
@@ -104,6 +108,42 @@ async function saveSettings(patch) {
   const current = await getSettings()
   if (current.id) return settingsStore.update(current.id, patch)
   return settingsStore.insert(patch)
+}
+
+function ensurePersonProfile() {
+  if (personProfilePromise) return personProfilePromise
+  personProfilePromise = (async () => {
+    let settings = await getSettings()
+    const personId = settings.personId || crypto.randomUUID()
+    const deviceName = settings.deviceName || lanSync.deviceName
+    if (!settings.personId || !settings.deviceName) {
+      settings = await saveSettings({ ...settings, personId, deviceName })
+    }
+
+    if (lanSync.clientInstanceId !== personId) lanSync.setClientIdentity(personId)
+    if (lanSync.deviceName !== deviceName) lanSync.setDeviceName(deviceName)
+
+    const { employee, migratedEmployeeIds, updatedTasks } = await reconcilePersonProfile(
+      employees,
+      tasks,
+      { personId, name: deviceName }
+    )
+    for (const task of updatedTasks) {
+      lanSync.notifyHostLocalChange('tasks:update', task)
+    }
+    for (const id of migratedEmployeeIds) {
+      lanSync.notifyHostLocalChange('employees:delete', { id })
+    }
+    lanSync.notifyHostLocalChange(
+      (await employees.get(personId)) ? 'employees:update' : 'employees:add',
+      employee
+    )
+
+    return { personId, deviceName }
+  })()
+  return personProfilePromise.finally(() => {
+    personProfilePromise = null
+  })
 }
 
 async function getTokens() {
@@ -352,7 +392,8 @@ async function notifyAlarm(task, alarm) {
 async function checkAlarms() {
   if (!Notification.isSupported()) return
   const now = Date.now()
-  const allTasks = await tasks.list()
+  const { personId } = await ensurePersonProfile()
+  const allTasks = (await tasks.list()).filter((task) => isTaskAssignedTo(task, personId))
   const alarms = await alarmStore.list()
   const byTaskId = new Map(alarms.map((alarm) => [alarm.taskId, alarm]))
   const today = vnTodayStr()
@@ -432,7 +473,8 @@ async function checkDueTasks() {
   if (!Notification.isSupported()) return
   const today = vnTodayStr()
   const nowTime = vnNowTimeStr()
-  const allTasks = await tasks.list()
+  const { personId } = await ensurePersonProfile()
+  const allTasks = (await tasks.list()).filter((task) => isTaskAssignedTo(task, personId))
   const dueToday = allTasks.filter((t) => !t.done && t.dueDate === today)
 
   for (const t of allTasks) {
@@ -484,8 +526,8 @@ async function checkDueTasks() {
 
 async function initLanFromSettings() {
   try {
+    await ensurePersonProfile()
     const settings = await getSettings()
-    lanSync.setDeviceName(settings.deviceName || lanSync.deviceName)
     const lan = settings.lan || {}
 
     if (lan.mode === 'host') {
@@ -686,7 +728,10 @@ ipcMain.handle('employees:delete', async (_e, id) => {
 })
 
 // ---------- IPC: settings ----------
-ipcMain.handle('settings:get', () => getSettings())
+ipcMain.handle('settings:get', async () => {
+  await ensurePersonProfile()
+  return getSettings()
+})
 ipcMain.handle('settings:save', async (_e, patch) => {
   if (Object.prototype.hasOwnProperty.call(patch || {}, 'deviceName')) {
     const deviceName = String(patch.deviceName || '').trim()
@@ -694,6 +739,12 @@ ipcMain.handle('settings:save', async (_e, patch) => {
     if (deviceName.length > 40) throw new Error('Tên hiển thị không được vượt quá 40 ký tự.')
     const saved = await saveSettings({ ...patch, deviceName })
     lanSync.setDeviceName(deviceName)
+    const personId = saved.personId || (await ensurePersonProfile()).personId
+    const existing = await employees.get(personId)
+    const profile = existing
+      ? await employees.update(personId, { name: deviceName })
+      : await employees.insert({ id: personId, name: deviceName, role: '' })
+    lanSync.notifyHostLocalChange(existing ? 'employees:update' : 'employees:add', profile)
     return saved
   }
   return saveSettings(patch)
@@ -766,9 +817,19 @@ ipcMain.handle('lan:setStandalone', async () => {
 
 // ---------- IPC: DOCX Export ----------
 ipcMain.handle('export:tasksDocx', async (_e, options = {}) => {
-  const allTasks = await tasks.list()
+  const { filterTasksForExport } = await import('../server/export-filter.mjs')
+  const allTasks = filterTasksForExport(await tasks.list(), options.scope, options.includeCompleted)
   const allEmployees = await employees.list()
-  const buffer = await generateTasksDocx(allTasks, allEmployees, options)
+  const scopeLabel = options.scope === 'personal'
+    ? 'Công việc cá nhân'
+    : options.scope === 'shared'
+      ? 'Công việc chung'
+      : 'Tất cả công việc'
+  const buffer = await generateTasksDocx(allTasks, allEmployees, {
+    scopeLabel,
+    onlyPending: false,
+    includeAssigneeBreakdown: options.groupByMember
+  })
 
   const defaultFileName = `TaskBoard_Bang_cong_viec_${vnTodayStr()}.docx`
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {

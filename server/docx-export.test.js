@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildAssigneeBreakdown, generateTasksDocx } from './docx-export.js'
+import {
+  buildAssigneeBreakdown,
+  filterTasksForExport,
+  generateTasksDocx
+} from './docx-export.js'
+import { countTasksForExport, filterTasksForExport } from './export-filter.mjs'
 
 describe('Word export assignee breakdown', () => {
   const employees = [
@@ -51,5 +56,28 @@ describe('Word export assignee breakdown', () => {
     )
 
     expect(document.subarray(0, 2).toString()).toBe('PK')
+  })
+})
+
+describe('Word export scope', () => {
+  const tasks = [
+    { id: 'personal-open', personal: true, done: false },
+    { id: 'personal-done', personal: true, done: true },
+    { id: 'shared-open', personal: false, done: false },
+    { id: 'shared-done', personal: false, done: true },
+    { id: 'legacy-shared-open', done: false },
+    { id: 'legacy-shared-done', done: true }
+  ]
+
+  it.each([
+    ['all', false, 3],
+    ['all', true, 6],
+    ['personal', false, 1],
+    ['personal', true, 2],
+    ['shared', false, 2],
+    ['shared', true, 4]
+  ])('counts %s scope with includeCompleted=%s', (scope, includeCompleted, count) => {
+    expect(countTasksForExport(tasks, scope, includeCompleted)).toBe(count)
+    expect(filterTasksForExport(tasks, scope, includeCompleted)).toHaveLength(count)
   })
 })

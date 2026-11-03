@@ -555,4 +555,8 @@ async function generateTasksDocx(tasks = [], employees = [], options = {}) {
   })
 }
 
-module.exports = { buildAssigneeBreakdown, buildTodoDocx, generateTasksDocx }
+module.exports = {
+  buildAssigneeBreakdown,
+  buildTodoDocx,
+  generateTasksDocx
+}

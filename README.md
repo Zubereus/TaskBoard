@@ -9,11 +9,11 @@ TaskBoard is a local-first desktop task manager built with Vue 3, Electron, and 
 - **Task management:** Set due dates and times, priorities, tags, notes, and one or more assignees. Organize work by deadline and search across task details.
 - **Recurring tasks:** Schedule daily, weekly, monthly, or yearly tasks. Completing an occurrence creates the next one while preserving the completed task in history.
 - **Team views and statistics:** Review assignments, workload, overdue tasks, and completion progress.
-- **Reminders:** Receive desktop notifications and optionally enable recurring alarms for tasks with deadlines.
+- **Reminders:** Receive desktop notifications only for tasks assigned to this installation's profile; unassigned tasks do not notify anyone. Optionally enable recurring alarms for assigned tasks with deadlines.
 - **Local-first storage:** Keep tasks and settings in JSON files on the device, with no database service to install.
 - **LAN sync:** Share tasks between a host and clients on the same local network. The host stores shared data; clients can also keep a local cache for offline viewing.
 - **Google Calendar integration:** Create and update calendar events for tasks with due dates.
-- **DOCX export:** Export task lists as formatted Word documents for printing or sharing.
+- **DOCX export:** Save the selected personal, shared, or all-task list as a formatted Word document for printing.
 - **Vietnam-time date handling:** Dates and notification schedules use the `Asia/Ho_Chi_Minh` time zone so they remain consistent across devices.
 
 The application interface is currently in Vietnamese. This README and the development documentation are written in English.
@@ -71,6 +71,8 @@ Tests are colocated with the modules they cover in `server/` and `src/utils/`. F
 LAN sync uses one device as the host and other devices as clients. The host accepts TCP connections on port `22236`; UDP port `22237` is used for host discovery. If network broadcast is blocked, clients can connect using the host's IP address. Configure the local firewall to allow these ports on trusted networks only.
 
 LAN sync is intended for a trusted local network, not the public internet. Chat messages relayed through the host are not end-to-end encrypted.
+
+Each installation has a stable local person ID and an editable display name. Once a client connects, it is registered in the shared team roster under that ID; renaming it keeps assignments intact. Disconnected people remain in the roster and can still be assigned tasks.
 
 ## Google Calendar setup
 

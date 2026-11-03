@@ -3,6 +3,7 @@ const dgram = require('dgram')
 const os = require('os')
 const EventEmitter = require('events')
 const { completionPatch } = require('./task-completion')
+const { reconcilePersonProfile } = require('./person-profile')
 
 const DEFAULT_PORT = 22236
 const DISCOVERY_PORT = 22237
@@ -150,6 +151,8 @@ class LanSyncManager extends EventEmitter {
       mode: this.mode,
       deviceName: this.deviceName,
       hostName: this.hostName,
+      hostPersonId: this.hostPersonId || '',
+      personId: this.clientInstanceId,
       localIps,
       primaryIp: getPrimaryLocalIp(),
       host: {
@@ -203,6 +206,22 @@ class LanSyncManager extends EventEmitter {
     }
 
     return this.deviceName
+  }
+
+  setClientIdentity(id) {
+    const nextId = String(id || '').trim()
+    if (!nextId) throw new Error('Mã định danh cá nhân không được để trống.')
+    this.clientInstanceId = nextId
+
+    if (this.mode === 'client' && this.clientConnected && this.clientWs) {
+      this.clientWs.send(JSON.stringify({
+        type: 'hello',
+        clientName: this.deviceName,
+        clientId: this.clientInstanceId
+      }))
+    }
+
+    return this.clientInstanceId
   }
 
   // -------------------------------------------------------------
@@ -393,6 +412,18 @@ class LanSyncManager extends EventEmitter {
     if (msg.type === 'hello') {
       clientMeta.name = msg.clientName || clientMeta.name
       clientMeta.clientId = msg.clientId || clientMeta.id
+      const { employee, migratedEmployeeIds, updatedTasks } = await reconcilePersonProfile(
+        this.db.employees,
+        this.db.tasks,
+        { personId: clientMeta.clientId, name: clientMeta.name }
+      )
+      for (const task of updatedTasks) {
+        this._broadcastEvent('tasks:update', task, ws)
+      }
+      for (const id of migratedEmployeeIds) {
+        this._broadcastEvent('employees:delete', { id }, ws)
+      }
+      this._broadcastEvent('employees:update', employee, ws)
       this.emitStatus()
 
       const tasks = (await this.db.tasks.list()).filter((task) => !task.personal)
@@ -401,6 +432,7 @@ class LanSyncManager extends EventEmitter {
         JSON.stringify({
           type: 'welcome',
           hostName: this.deviceName,
+          hostPersonId: this.clientInstanceId,
           tasks,
           employees,
           chatMessages: this.chatMessages,
@@ -847,6 +879,7 @@ class LanSyncManager extends EventEmitter {
   async _handleClientIncomingMessage(msg) {
     if (msg.type === 'welcome') {
       this.hostName = msg.hostName || this.hostName
+      this.hostPersonId = msg.hostPersonId || this.hostPersonId
       this.availableClients = Array.isArray(msg.clients) ? msg.clients : []
       this.emitStatus()
       if (Array.isArray(msg.tasks)) {

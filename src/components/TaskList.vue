@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
 import {
@@ -13,6 +13,12 @@ import {
 import { createUndoState, nextRecurringTask, undoCompletedTask } from '../utils/taskWorkflow'
 import { canEditTask, canToggleTask } from '../utils/taskPermissions'
 import { matchesTaskSearch } from '../utils/taskSearch'
+import {
+  exportButtonDisabled,
+  groupByMemberForScope,
+  isGroupByMemberDisabled
+} from '../utils/exportDialog'
+import { countTasksForExport } from '../../server/export-filter.mjs'
 
 const props = defineProps({
   newChatMessage: { type: Object, default: null },
@@ -37,14 +43,42 @@ const taskOperations = new Set()
 
 // Export Word modal & toast state
 const showExportModal = ref(false)
-const exportOnlyPending = ref(true)
-const includeAssigneeBreakdown = ref(false)
+const exportScope = ref('all')
+const exportIncludeCompleted = ref(false)
+const exportGroupByMember = ref(false)
+const exportTaskCount = ref(0)
+const countingExportTasks = ref(false)
 const exporting = ref(false)
 const exportSuccessToast = ref(null)
+const exportModal = ref(null)
+const scopeAllOption = ref(null)
+const scopePersonalOption = ref(null)
+const scopeSharedOption = ref(null)
 let exportSuccessTimer = null
+let exportCountRequestId = 0
+let exportTrigger = null
 
 // Real-time LAN sync unsubscribe
 let unregisterLanSync = null
+
+const scopeOptionRefs = {
+  all: scopeAllOption,
+  personal: scopePersonalOption,
+  shared: scopeSharedOption
+}
+
+watch(exportScope, (scope) => {
+  exportGroupByMember.value = groupByMemberForScope(scope, exportGroupByMember.value)
+})
+
+watch([tasks, exportScope, exportIncludeCompleted], refreshExportTaskCount, { deep: true, immediate: true })
+
+watch(showExportModal, async (isOpen) => {
+  if (!isOpen) return
+  await nextTick()
+  scopeOptionRefs[exportScope.value].value?.focus()
+  refreshExportTaskCount()
+})
 
 async function load() {
   try {
@@ -73,6 +107,74 @@ onUnmounted(() => {
   if (bannerTimer) clearTimeout(bannerTimer)
   if (exportSuccessTimer) clearTimeout(exportSuccessTimer)
 })
+
+async function refreshExportTaskCount() {
+  const requestId = ++exportCountRequestId
+  countingExportTasks.value = true
+  try {
+    const localTasks = await window.api.tasks.list()
+    const count = countTasksForExport(localTasks, exportScope.value, exportIncludeCompleted.value)
+    if (requestId === exportCountRequestId) exportTaskCount.value = count
+  } catch (err) {
+    if (requestId === exportCountRequestId) {
+      flash('Không thể đếm công việc để xuất.', true, errorDetail(err))
+    }
+  } finally {
+    if (requestId === exportCountRequestId) countingExportTasks.value = false
+  }
+}
+
+function openExportDialog(event) {
+  exportTrigger = event.currentTarget
+  showExportModal.value = true
+}
+
+async function closeExportDialog() {
+  showExportModal.value = false
+  await nextTick()
+  exportTrigger?.focus()
+}
+
+function chooseExportScope(scope, focus = false) {
+  exportScope.value = scope
+  if (focus) nextTick(() => scopeOptionRefs[scope].value?.focus())
+}
+
+function onScopeKeydown(event, scope) {
+  const scopes = ['all', 'personal', 'shared']
+  const currentIndex = scopes.indexOf(scope)
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % scopes.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex + scopes.length - 1) % scopes.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = scopes.length - 1
+  else return
+  event.preventDefault()
+  chooseExportScope(scopes[nextIndex], true)
+}
+
+function trapExportDialogFocus(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeExportDialog()
+    return
+  }
+  if (event.key !== 'Tab') return
+
+  const focusable = [...exportModal.value.querySelectorAll(
+    'button:not(:disabled):not([tabindex="-1"]), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"]):not(button)'
+  )].filter((element) => element.getClientRects().length > 0)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 function assigneeNamesFor(task) {
   const ids = task.assigneeIds || (task.assigneeId ? [task.assigneeId] : [])
@@ -290,8 +392,9 @@ async function runDocxExport() {
   exporting.value = true
   try {
     const res = await window.api.export.tasksDocx({
-      onlyPending: exportOnlyPending.value,
-      includeAssigneeBreakdown: includeAssigneeBreakdown.value
+      scope: exportScope.value,
+      includeCompleted: exportIncludeCompleted.value,
+      groupByMember: exportGroupByMember.value
     })
     if (res && !res.canceled && res.filePath) {
       showExportModal.value = false
@@ -327,7 +430,7 @@ async function openExportedFile(filePath) {
       </div>
 
       <div class="actions">
-        <button class="btn btn-secondary" @click="showExportModal = true">
+        <button class="btn btn-secondary" @click="openExportDialog">
           Xuất Word (.docx)
         </button>
         <button class="btn btn-primary" @click="openNew">
@@ -464,52 +567,112 @@ async function openExportedFile(filePath) {
     </div>
 
     <!-- DOCX Export Options Modal -->
-    <div v-if="showExportModal" class="overlay" @click.self="showExportModal = false">
-      <div class="modal export-modal">
+    <div v-if="showExportModal" class="overlay" @click.self="closeExportDialog">
+      <div
+        ref="exportModal"
+        class="modal export-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        @keydown="trapExportDialogFocus"
+      >
         <div class="modal-header">
-          <div class="modal-title-row">
-            <h3>Xuất danh sách công việc ra Word (.docx)</h3>
+          <div>
+            <h3 id="export-dialog-title">Xuất công việc ra Word</h3>
+            <p class="export-subtitle">Khổ giấy A4.</p>
           </div>
-          <button class="close-btn" @click="showExportModal = false">✕</button>
+          <button class="close-btn" aria-label="Đóng" @click="closeExportDialog">✕</button>
         </div>
 
-        <p class="export-description">
-          Tệp Word được định dạng theo mẫu bảng theo dõi để bàn làm việc (Desk To-Do List), với các ô vuông checkbox sẵn sàng in ra giấy A4 để đánh dấu bằng bút.
+        <div class="export-groups">
+          <section class="export-group" aria-labelledby="export-scope-label">
+            <h4 id="export-scope-label">Phạm vi</h4>
+            <div class="scope-segmented" role="radiogroup" aria-labelledby="export-scope-label">
+              <button
+                ref="scopeAllOption"
+                type="button"
+                role="radio"
+                :aria-checked="exportScope === 'all'"
+                :tabindex="exportScope === 'all' ? 0 : -1"
+                @click="chooseExportScope('all')"
+                @keydown="onScopeKeydown($event, 'all')"
+              >Tất cả</button>
+              <button
+                ref="scopePersonalOption"
+                type="button"
+                role="radio"
+                :aria-checked="exportScope === 'personal'"
+                :tabindex="exportScope === 'personal' ? 0 : -1"
+                @click="chooseExportScope('personal')"
+                @keydown="onScopeKeydown($event, 'personal')"
+              >Cá nhân</button>
+              <button
+                ref="scopeSharedOption"
+                type="button"
+                role="radio"
+                :aria-checked="exportScope === 'shared'"
+                :tabindex="exportScope === 'shared' ? 0 : -1"
+                @click="chooseExportScope('shared')"
+                @keydown="onScopeKeydown($event, 'shared')"
+              >Chung</button>
+            </div>
+          </section>
+
+          <section class="export-group">
+            <div class="export-switch-row">
+              <div class="export-switch-copy">
+                <span id="include-completed-label" class="export-switch-label">Bao gồm việc đã hoàn thành</span>
+              </div>
+              <button
+                type="button"
+                class="toggle-switch"
+                role="switch"
+                :aria-checked="exportIncludeCompleted"
+                aria-labelledby="include-completed-label"
+                @click="exportIncludeCompleted = !exportIncludeCompleted"
+              ><span></span></button>
+            </div>
+          </section>
+
+          <section class="export-group">
+            <div class="export-switch-row">
+              <div class="export-switch-copy">
+                <span id="group-by-member-label" class="export-switch-label">Chia theo thành viên</span>
+                <span id="group-by-member-hint" class="export-switch-hint">
+                  {{ isGroupByMemberDisabled(exportScope) ? 'Chỉ áp dụng cho công việc chung' : 'Mỗi người có một danh sách riêng.' }}
+                </span>
+              </div>
+              <button
+                type="button"
+                class="toggle-switch"
+                role="switch"
+                :aria-checked="exportGroupByMember"
+                :aria-disabled="isGroupByMemberDisabled(exportScope)"
+                :disabled="isGroupByMemberDisabled(exportScope)"
+                aria-labelledby="group-by-member-label"
+                aria-describedby="group-by-member-hint"
+                @click="exportGroupByMember = !exportGroupByMember"
+              ><span></span></button>
+            </div>
+          </section>
+        </div>
+
+        <p class="export-count" role="status" aria-live="polite">
+          <template v-if="countingExportTasks">Đang đếm công việc...</template>
+          <template v-else-if="exportTaskCount === 0">Không có công việc nào để xuất</template>
+          <template v-else>Sẽ xuất {{ exportTaskCount }} công việc</template>
         </p>
 
-        <div class="export-options">
-          <label class="radio-option" :class="{ selected: exportOnlyPending }">
-            <input type="radio" :value="true" v-model="exportOnlyPending" />
-            <div class="radio-content">
-              <strong>Chỉ việc đang thực hiện & quá hạn (Khuyên dùng)</strong>
-              <span>Gọn gàng, tập trung vào những việc chưa làm để in dán tại bàn làm việc.</span>
-            </div>
-          </label>
-
-          <label class="radio-option" :class="{ selected: !exportOnlyPending }">
-            <input type="radio" :value="false" v-model="exportOnlyPending" />
-            <div class="radio-content">
-              <strong>Tất cả công việc (kể cả việc đã xong)</strong>
-              <span>Phù hợp để lưu trữ hoặc nộp báo cáo tổng hợp tiến độ cho quản lý.</span>
-            </div>
-          </label>
-          <label class="radio-option" :class="{ selected: includeAssigneeBreakdown }">
-            <input type="checkbox" v-model="includeAssigneeBreakdown" />
-            <div class="radio-content">
-              <strong>Thêm danh sách công việc theo thành viên</strong>
-              <span>
-                Tùy chọn: mỗi người có danh sách riêng. Việc được giao cho nhiều người sẽ xuất hiện dưới từng người; trạng thái tuân theo lựa chọn báo cáo phía trên.
-              </span>
-            </div>
-          </label>
-        </div>
-
         <div class="modal-footer">
-          <button class="btn btn-ghost" :disabled="exporting" @click="showExportModal = false">
+          <button class="btn btn-ghost" :disabled="exporting" @click="closeExportDialog">
             Hủy
           </button>
-          <button class="btn btn-primary" :disabled="exporting" @click="runDocxExport">
-            {{ exporting ? 'Đang tạo tệp...' : 'Tạo & Lưu tệp Word (.docx)' }}
+          <button
+            class="btn btn-primary"
+            :disabled="exportButtonDisabled(exportTaskCount, exporting, countingExportTasks)"
+            @click="runDocxExport"
+          >
+            {{ exporting ? 'Đang tạo tệp...' : 'Lưu tệp Word' }}
           </button>
         </div>
       </div>
@@ -953,53 +1116,121 @@ h1 {
   color: var(--text);
 }
 
-.export-description {
+.export-subtitle {
   font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.5;
-  margin: 0 0 18px;
+  color: var(--text-dim);
+  margin: 5px 0 0;
 }
 
-.export-options {
+.export-groups {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 24px;
+  gap: 16px;
+  margin-top: 20px;
+}
+.export-group h4 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.radio-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
+.scope-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  background: var(--bg);
+}
+.scope-segmented button {
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.12s ease;
 }
-.radio-option:hover {
-  border-color: #CBD5E1;
-  background: #FAFBFD;
+.scope-segmented button[aria-checked="true"] {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
 }
-.radio-option.selected {
-  border-color: var(--accent);
-  background: var(--accent-subtle);
+.scope-segmented button:focus-visible,
+.toggle-switch:focus-visible,
+.close-btn:focus-visible,
+.modal-footer button:focus-visible {
+  outline: 3px solid var(--border-focus);
+  outline-offset: 2px;
 }
-.radio-option input {
-  margin-top: 3px;
+
+.export-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
-.radio-content {
+.export-switch-copy {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
-.radio-content strong {
-  font-size: 13.5px;
+.export-switch-label {
   color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
 }
-.radio-content span {
-  font-size: 12px;
+.export-switch-hint {
   color: var(--text-dim);
+  font-size: 12px;
+}
+.toggle-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex: 0 0 42px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #d7dce5;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.toggle-switch span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease;
+}
+.toggle-switch[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.toggle-switch[aria-checked="true"] span {
+  transform: translateX(18px);
+}
+.toggle-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.export-count {
+  min-height: 20px;
+  margin: 18px 0 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .modal-footer {

@@ -7,7 +7,11 @@ const draft = ref({ name: '', role: '' })
 const editingId = ref(null)
 const banner = ref(null)
 const deleteCandidate = ref(null)
+const activePersonIds = ref(new Set())
+const hostPersonId = ref('')
+const isLocalHost = ref(false)
 let unregisterLanSync = null
+let unregisterLanStatus = null
 let bannerTimer = null
 
 async function load() {
@@ -26,10 +30,17 @@ onMounted(() => {
       load()
     })
   }
+  if (window.api?.lan?.onStatusChange) {
+    unregisterLanStatus = window.api.lan.onStatusChange(updateActivePeople)
+  }
+  window.api.lan.getStatus().then(updateActivePeople).catch((err) => {
+    console.error('Không tải được trạng thái thành viên:', err)
+  })
 })
 
 onUnmounted(() => {
   if (unregisterLanSync) unregisterLanSync()
+  if (unregisterLanStatus) unregisterLanStatus()
   if (bannerTimer) clearTimeout(bannerTimer)
 })
 
@@ -41,6 +52,36 @@ function flash(msg, isError = false) {
     bannerTimer = null
   }, isError ? 6000 : 4000)
 }
+
+function updateActivePeople(status) {
+  isLocalHost.value = status.mode === 'host'
+  hostPersonId.value = isLocalHost.value ? status.personId : status.hostPersonId || ''
+  const activeIds = new Set(
+    (status.mode === 'host' ? status.host.clients : status.client.clients).map((client) => client.id)
+  )
+  if (status.mode !== 'client' || status.client.connected) activeIds.add(status.personId)
+  if (status.mode === 'client' && status.client.connected && status.hostPersonId) {
+    activeIds.add(status.hostPersonId)
+  }
+  activePersonIds.value = activeIds
+}
+
+function isActive(employeeId) {
+  return activePersonIds.value.has(employeeId)
+}
+
+const rosterSections = computed(() => {
+  const host = employees.value.find((employee) => employee.id === hostPersonId.value)
+  const members = employees.value.filter((employee) => employee.id !== hostPersonId.value)
+  return [
+    ...(host ? [{
+      key: 'host',
+      title: isLocalHost.value ? 'Máy chủ · Bạn' : 'Máy chủ',
+      employees: [host]
+    }] : []),
+    ...(members.length ? [{ key: 'members', title: 'Thành viên', employees: members }] : [])
+  ]
+})
 
 async function save() {
   if (!draft.value.name.trim()) {
@@ -122,8 +163,8 @@ function priorityClass(p) {
   <div>
     <header class="header"><h1>Nhóm</h1></header>
     <p class="hint">
-      Thêm thành viên ở đây để có thể giao việc cho họ trong biểu mẫu công việc.
-      Đây chỉ là danh sách tên — không lưu hay sử dụng thông tin liên hệ nào.
+      Thiết bị đã kết nối sẽ tự xuất hiện trong danh sách; bạn cũng có thể thêm người đang ngoại tuyến.
+      Chấm xanh cho biết người đó đang kết nối.
     </p>
 
     <div v-if="banner" class="banner" :class="{ error: banner.isError }">{{ banner.msg }}</div>
@@ -141,27 +182,38 @@ function priorityClass(p) {
 
     <div v-if="employees.length === 0" class="empty">Chưa có thành viên nào — thêm ở trên.</div>
 
-    <div class="employee-card" v-for="emp in employees" :key="emp.id">
-      <div class="employee-header">
-        <div>
-          <div class="employee-name">{{ emp.name }}</div>
-          <div class="employee-role" v-if="emp.role">{{ emp.role }}</div>
+    <section v-for="section in rosterSections" :key="section.key" class="roster-section">
+      <h2 class="section-title">{{ section.title }}</h2>
+      <div class="employee-card" v-for="emp in section.employees" :key="emp.id">
+        <div class="employee-header">
+          <div>
+            <div class="employee-name">
+              <span
+                class="presence-dot"
+                :class="{ active: isActive(emp.id) }"
+                :title="isActive(emp.id) ? 'Đang kết nối' : 'Ngoại tuyến'"
+                :aria-label="isActive(emp.id) ? 'Đang kết nối' : 'Ngoại tuyến'"
+              ></span>
+              {{ emp.name }}
+            </div>
+            <div class="employee-role" v-if="emp.role">{{ emp.role }}</div>
+          </div>
+          <div class="employee-actions">
+            <span class="task-count">{{ tasksFor(emp.id).length }} việc</span>
+            <button class="btn btn-ghost small" @click="edit(emp)">Sửa</button>
+            <button class="btn btn-danger small" @click="remove(emp)">Xóa</button>
+          </div>
         </div>
-        <div class="employee-actions">
-          <span class="task-count">{{ tasksFor(emp.id).length }} việc</span>
-          <button class="btn btn-ghost small" @click="edit(emp)">Sửa</button>
-          <button class="btn btn-danger small" @click="remove(emp)">Xóa</button>
-        </div>
-      </div>
 
-      <ul class="task-mini-list" v-if="tasksFor(emp.id).length">
-        <li v-for="t in tasksFor(emp.id)" :key="t.id">
-          <span class="mini-priority" :class="priorityClass(t.priority)"></span>
-          {{ t.title }}
-        </li>
-      </ul>
-      <div class="no-tasks" v-else>Hiện chưa có việc nào được giao.</div>
-    </div>
+        <ul class="task-mini-list" v-if="tasksFor(emp.id).length">
+          <li v-for="t in tasksFor(emp.id)" :key="t.id">
+            <span class="mini-priority" :class="priorityClass(t.priority)"></span>
+            {{ t.title }}
+          </li>
+        </ul>
+        <div class="no-tasks" v-else>Hiện chưa có việc nào được giao.</div>
+      </div>
+    </section>
 
     <template v-if="unassigned.length">
       <h2 class="section-title">Chưa giao</h2>
@@ -231,8 +283,11 @@ h1 { font-size: 22px; margin: 0; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
-.employee-name { font-weight: 700; font-size: 14.5px; }
+.employee-name { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 14.5px; }
+.presence-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: #a3aab5; }
+.presence-dot.active { background: #2ca66f; }
 .employee-role { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 .employee-actions { display: flex; align-items: center; gap: 8px; }
 .task-count {
@@ -242,6 +297,8 @@ h1 { font-size: 22px; margin: 0; }
   background: #EAF1FB;
   padding: 3px 9px;
   border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .small { padding: 5px 10px; font-size: 12px; }
 

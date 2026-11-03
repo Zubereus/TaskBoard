@@ -101,7 +101,46 @@ describe('LAN sync integration', () => {
         { id: 'local-1', title: 'Local task', personal: true }
       ])
     )
-    expect(await client.db.employees.list()).toEqual([{ id: 'member-1', name: 'Lan A' }])
+    expect(await client.db.employees.list()).toEqual(
+      expect.arrayContaining([
+        { id: 'member-1', name: 'Lan A' },
+        { id: client.clientInstanceId, name: client.deviceName, role: '' }
+      ])
+    )
+  })
+
+  it('registers clients by stable identity and updates their roster name after rename', async () => {
+    const host = new LanSyncManager(createDb(
+      [{ id: 'legacy-task', assigneeIds: ['legacy-person'] }],
+      [{ id: 'legacy-person', name: 'Lan A', role: 'Lead' }]
+    ))
+    const client = new LanSyncManager(createDb())
+    managers.push(host, client)
+    const port = await findFreePort()
+    client.setClientIdentity('person-1')
+    client.setDeviceName('Lan A')
+
+    await host.startHost(port)
+    await client.startClient('127.0.0.1', port, false)
+    await waitFor(async () =>
+      (await host.db.employees.get('person-1'))?.name === 'Lan A' &&
+      (await client.db.employees.get('person-1'))?.name === 'Lan A'
+    )
+
+    expect(await client.db.employees.get('person-1')).toMatchObject({
+      id: 'person-1',
+      name: 'Lan A',
+      role: 'Lead'
+    })
+    expect(await host.db.employees.get('legacy-person')).toBeNull()
+    expect(await host.db.tasks.get('legacy-task')).toMatchObject({
+      assigneeIds: ['person-1'],
+      assigneeId: null
+    })
+
+    client.setDeviceName('Lan A Updated')
+    await waitFor(async () => (await host.db.employees.get('person-1'))?.name === 'Lan A Updated')
+    expect(await host.db.employees.list()).toHaveLength(1)
   })
 
   it('allows client task creation and completion but rejects edits and deletes', async () => {
