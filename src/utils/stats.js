@@ -7,9 +7,11 @@ export function assigneesOf(task) {
 export function calculateStats(tasks = [], employees = [], today) {
   const validToday = parseDateStr(today)
   const weekStart = validToday ? addDaysStr(today, -(isoWeekday(today) - 1)) : null
+  const sharedTasks = tasks.filter((task) => !task.personal)
+  const employeeIds = new Set(employees.map((employee) => employee.id))
   const rows = employees
     .map((employee) => {
-      const assigned = tasks.filter((task) => assigneesOf(task).includes(employee.id))
+      const assigned = sharedTasks.filter((task) => assigneesOf(task).includes(employee.id))
       const completed = assigned.filter((task) => task.done).length
       return {
         id: employee.id,
@@ -29,8 +31,14 @@ export function calculateStats(tasks = [], employees = [], today) {
     (task) => !task.done && task.dueDate && daysBetween(today, task.dueDate) < 0
   )
   const openTasks = tasks.filter((task) => !task.done)
-  const unassignedOpenTasks = openTasks.filter((task) => assigneesOf(task).length === 0)
-  const unassignedOverdueTasks = overdueTasks.filter((task) => assigneesOf(task).length === 0)
+  const unassignedOpenTasks = sharedTasks.filter(
+    (task) => !task.done && !assigneesOf(task).some((id) => employeeIds.has(id))
+  )
+  const unassignedOverdueTasks = sharedTasks.filter(
+    (task) => !task.done && task.dueDate &&
+      daysBetween(today, task.dueDate) < 0 &&
+      !assigneesOf(task).some((id) => employeeIds.has(id))
+  )
   const dueSoonTasks = openTasks.filter((task) => {
     const daysUntilDue = task.dueDate ? daysBetween(today, task.dueDate) : null
     return daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7

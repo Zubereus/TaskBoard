@@ -36,7 +36,7 @@ const workloadRows = computed(() => [
   ...rows.value,
   {
     id: 'unassigned',
-    name: 'Chưa giao',
+    name: 'Việc chung chưa giao',
     openAssigned: stats.value.unassignedOpenTasks,
     overdue: stats.value.unassignedOverdueTasks
   }
@@ -73,7 +73,7 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
       </div>
       <div class="summary-card">
         <span class="summary-value">{{ stats.unassignedOpenTasks }}</span>
-        <span class="summary-label">Chưa giao</span>
+        <span class="summary-label">Việc chung chưa giao</span>
       </div>
     </div>
     <div class="charts-row">
@@ -131,7 +131,7 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
       </div>
     </div>
     <p class="chart-footnote">
-      Phần màu đỏ là công việc quá hạn. Việc giao cho nhiều người được tính vào khối lượng và tỉ lệ của từng người.
+      Chỉ công việc chung được tính vào khối lượng theo người phụ trách. Phần màu đỏ là công việc quá hạn; việc giao cho nhiều người được tính cho từng người.
     </p>
   </div>
 </template>

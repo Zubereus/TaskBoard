@@ -104,6 +104,45 @@ describe('task statistics', () => {
     })
   })
 
+  it('excludes personal tasks from shared workload and unassigned counts', () => {
+    const tasks = [
+      { id: 'personal-open', personal: true, done: false },
+      { id: 'personal-overdue', personal: true, done: false, dueDate: '2026-10-23' },
+      { id: 'personal-assigned', personal: true, done: false, assigneeIds: ['a'] },
+      { id: 'shared-unassigned', done: false },
+      { id: 'shared-overdue', done: false, dueDate: '2026-10-23' },
+      { id: 'shared-assigned', done: false, assigneeIds: ['a'] }
+    ]
+    const result = calculateStats(tasks, [{ id: 'a', name: 'An' }], '2026-10-24')
+
+    expect(result.openTasks).toHaveLength(6)
+    expect(result.overdueTasks.map((task) => task.id)).toEqual([
+      'personal-overdue',
+      'shared-overdue'
+    ])
+    expect(result.unassignedOpenTasks).toBe(2)
+    expect(result.unassignedOverdueTasks).toBe(1)
+    expect(result.rows[0]).toMatchObject({
+      assigned: 1,
+      openAssigned: 1,
+      overdue: 0
+    })
+  })
+
+  it('counts shared tasks assigned to missing employees as unassigned', () => {
+    const tasks = [
+      { id: 'without-assignee', done: false },
+      { id: 'deleted-member', assigneeIds: ['removed-member'], done: false },
+      { id: 'legacy-deleted-member', assigneeId: 'removed-member', done: false, dueDate: '2026-10-23' },
+      { id: 'current-member', assigneeIds: ['a'], done: false }
+    ]
+    const result = calculateStats(tasks, [{ id: 'a', name: 'An' }], '2026-10-24')
+
+    expect(result.unassignedOpenTasks).toBe(3)
+    expect(result.unassignedOverdueTasks).toBe(1)
+    expect(result.rows[0]).toMatchObject({ assigned: 1, openAssigned: 1, overdue: 0 })
+  })
+
   it('counts overdue tasks only when unfinished and treats due today as not overdue', () => {
     const tasks = [
       { id: 'past', assigneeIds: ['a'], dueDate: '2026-10-23', done: false },
