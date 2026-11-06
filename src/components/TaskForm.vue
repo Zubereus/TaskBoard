@@ -132,7 +132,7 @@ function submit() {
       <textarea v-model="form.notes" rows="2" placeholder="Chi tiết thêm..."></textarea>
 
       <label>Giao cho (có thể chọn nhiều người)</label>
-      <div v-if="employees.length === 0" class="no-employees">Chưa có thành viên nào — thêm ở tab "Nhóm".</div>
+      <div v-if="employees.length === 0" class="no-employees">Chưa có thành viên nào. Thêm ở tab “Nhóm”.</div>
       <div v-else class="assignee-list">
         <label v-for="e in employees" :key="e.id" class="assignee-item">
           <input
@@ -184,8 +184,8 @@ function submit() {
 
       <label>Phạm vi công việc</label>
       <select v-model="form.visibility">
-        <option value="shared">Công việc chung — đồng bộ với nhóm</option>
-        <option value="personal">Công việc cá nhân — chỉ trên máy này</option>
+        <option value="shared">Công việc chung (đồng bộ với nhóm)</option>
+        <option value="personal">Công việc cá nhân (chỉ trên máy này)</option>
       </select>
 
       <label class="checkbox-row" v-if="form.dueDate">

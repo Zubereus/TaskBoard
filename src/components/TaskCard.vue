@@ -112,9 +112,9 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   gap: 14px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 14px 18px;
-  margin-bottom: 10px;
+  border-radius: 9px;
+  padding: 13px 16px;
+  margin-bottom: 8px;
   transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: var(--shadow-card);
 }
@@ -150,9 +150,7 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   border-color: var(--accent);
   transform: scale(1.05);
 }
-.check:disabled {
-  cursor: default;
-}
+.check:disabled { cursor: default; }
 .check:disabled:hover {
   border-color: var(--success);
   transform: none;
@@ -161,10 +159,7 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   background: var(--success);
   border-color: var(--success);
 }
-.check-icon {
-  font-size: 11px;
-  font-weight: 700;
-}
+.check-icon { font-size: 11px; font-weight: 700; }
 
 .body {
   flex: 1;
@@ -218,15 +213,8 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   font-weight: 700;
 }
 .clock { font-size: 11px; }
-.recur {
-  color: #059669;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.synced {
-  color: #2563EB;
-  font-weight: 500;
-}
+.recur { color: #059669; font-weight: 600; white-space: nowrap; }
+.synced { color: #2563EB; font-weight: 500; }
 .personal {
   color: #7C3AED;
   font-weight: 600;
@@ -243,9 +231,9 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
 }
 
 .priority-badge {
-  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 5px;
   padding: 4px 10px;
   border-radius: 999px;
@@ -261,19 +249,16 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   font-size: 10.5px;
   opacity: 0.8;
 }
-
 .priority-badge.high {
   background: var(--tag-rose-bg);
   color: var(--tag-rose-fg);
 }
 .priority-badge.high .priority-dot { background: var(--pri-high); }
-
 .priority-badge.mid {
   background: var(--tag-amber-bg);
   color: var(--tag-amber-fg);
 }
 .priority-badge.mid .priority-dot { background: var(--pri-mid); }
-
 .priority-badge.low {
   background: var(--tag-blue-bg);
   color: var(--tag-blue-fg);
@@ -291,11 +276,9 @@ const assigneeText = computed(() => props.assigneeNames.join(', '))
   opacity: 0.5;
   transition: all 0.12s ease;
 }
-.card:hover .delete-btn {
-  opacity: 1;
-}
-.delete-btn:hover {
-  background: var(--danger-subtle);
-  color: var(--danger-text);
+.card:hover .delete-btn { opacity: 1; }
+.delete-btn:hover { background: var(--danger-subtle); color: var(--danger-text); }
+@media (prefers-reduced-motion: reduce) {
+  .card, .check, .delete-btn { transition: none; }
 }
 </style>

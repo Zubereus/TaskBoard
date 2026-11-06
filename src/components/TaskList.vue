@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import TaskCard from './TaskCard.vue'
 import TaskForm from './TaskForm.vue'
+import SegmentedControl from './SegmentedControl.vue'
+import ToggleSwitch from './ToggleSwitch.vue'
 import {
   vnTodayStr,
   currentWeekDatesVN,
@@ -37,9 +39,19 @@ const taskScope = ref('all')
 const searchQuery = ref('')
 const undoToast = ref(null)
 const deleteCandidate = ref(null)
+const taskScopeOptions = [
+  { value: 'all', label: 'Tất cả' },
+  { value: 'personal', label: 'Cá nhân' },
+  { value: 'shared', label: 'Chung' }
+]
 let undoTimer = null
 let bannerTimer = null
+let clockTimer = null
 const taskOperations = new Set()
+
+// Ticks once a minute so "today", the week sections and the header date
+// roll over at midnight even if the app is left open overnight.
+const clockTick = ref(0)
 
 // Export Word modal & toast state
 const showExportModal = ref(false)
@@ -51,21 +63,13 @@ const countingExportTasks = ref(false)
 const exporting = ref(false)
 const exportSuccessToast = ref(null)
 const exportModal = ref(null)
-const scopeAllOption = ref(null)
-const scopePersonalOption = ref(null)
-const scopeSharedOption = ref(null)
+const exportScopeControl = ref(null)
 let exportSuccessTimer = null
 let exportCountRequestId = 0
 let exportTrigger = null
 
 // Real-time LAN sync unsubscribe
 let unregisterLanSync = null
-
-const scopeOptionRefs = {
-  all: scopeAllOption,
-  personal: scopePersonalOption,
-  shared: scopeSharedOption
-}
 
 watch(exportScope, (scope) => {
   exportGroupByMember.value = groupByMemberForScope(scope, exportGroupByMember.value)
@@ -76,7 +80,7 @@ watch([tasks, exportScope, exportIncludeCompleted], refreshExportTaskCount, { de
 watch(showExportModal, async (isOpen) => {
   if (!isOpen) return
   await nextTick()
-  scopeOptionRefs[exportScope.value].value?.focus()
+  exportScopeControl.value?.focus()
   refreshExportTaskCount()
 })
 
@@ -93,6 +97,11 @@ async function load() {
 
 onMounted(() => {
   load()
+  const updateClock = () => {
+    clockTick.value = clockTick.value + 1
+    clockTimer = setTimeout(updateClock, 60 * 1000 - (Date.now() % (60 * 1000)))
+  }
+  clockTimer = setTimeout(updateClock, 60 * 1000 - (Date.now() % (60 * 1000)))
   // Subscribe to real-time sync from other LAN peers
   if (window.api?.lan?.onDataSync) {
     unregisterLanSync = window.api.lan.onDataSync(() => {
@@ -103,13 +112,15 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (unregisterLanSync) unregisterLanSync()
+  if (clockTimer) clearTimeout(clockTimer)
   if (undoTimer) clearTimeout(undoTimer)
   if (bannerTimer) clearTimeout(bannerTimer)
   if (exportSuccessTimer) clearTimeout(exportSuccessTimer)
 })
 
 async function refreshExportTaskCount() {
-  const requestId = ++exportCountRequestId
+  exportCountRequestId = exportCountRequestId + 1
+  const requestId = exportCountRequestId
   countingExportTasks.value = true
   try {
     const localTasks = await window.api.tasks.list()
@@ -133,24 +144,6 @@ async function closeExportDialog() {
   showExportModal.value = false
   await nextTick()
   exportTrigger?.focus()
-}
-
-function chooseExportScope(scope, focus = false) {
-  exportScope.value = scope
-  if (focus) nextTick(() => scopeOptionRefs[scope].value?.focus())
-}
-
-function onScopeKeydown(event, scope) {
-  const scopes = ['all', 'personal', 'shared']
-  const currentIndex = scopes.indexOf(scope)
-  let nextIndex = currentIndex
-  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % scopes.length
-  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex + scopes.length - 1) % scopes.length
-  else if (event.key === 'Home') nextIndex = 0
-  else if (event.key === 'End') nextIndex = scopes.length - 1
-  else return
-  event.preventDefault()
-  chooseExportScope(scopes[nextIndex], true)
 }
 
 function trapExportDialogFocus(event) {
@@ -193,8 +186,44 @@ const visibleTasks = computed(() => {
 })
 
 const isSearchActive = computed(() => searchQuery.value.trim().length > 0)
-const weekDates = computed(() => currentWeekDatesVN())
-const today = computed(() => vnTodayStr())
+const today = computed(() => {
+  clockTick.value
+  return vnTodayStr()
+})
+const weekDates = computed(() => {
+  today.value
+  return currentWeekDatesVN()
+})
+
+// ---- Header summary ------------------------------------------------------
+const todayFormatter = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  weekday: 'long',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric'
+})
+const clockFormatter = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+})
+const todayLabel = computed(() => {
+  today.value
+  return todayFormatter.format(new Date())
+})
+const clockLabel = computed(() => {
+  clockTick.value
+  return clockFormatter.format(new Date())
+})
+const openTasks = computed(() => tasks.value.filter((task) => !task.done && task.dueDate))
+const overdueCount = computed(() => openTasks.value.filter((task) => task.dueDate < today.value).length)
+const dueTodayCount = computed(() => openTasks.value.filter((task) => task.dueDate === today.value).length)
+
+// An open task counts as overdue as soon as its day has passed, so the
+// header summary and the "Quá hạn" section always agree.
+const isPastDue = (task) => !task.done && task.dueDate < today.value
 
 // Group tasks into: overdue, days of the week, later, and no date
 const groups = computed(() => {
@@ -212,7 +241,7 @@ const groups = computed(() => {
       noDate.push(t)
       continue
     }
-    if (daysBetween(weekStart, t.dueDate) < 0) {
+    if (daysBetween(weekStart, t.dueDate) < 0 || isPastDue(t)) {
       overdue.push(t)
     } else if (daysBetween(weekEnd, t.dueDate) > 0) {
       later.push(t)
@@ -244,9 +273,17 @@ const groups = computed(() => {
   return sections
 })
 
-const activeCount = computed(() => tasks.value.filter((t) => !t.done).length)
-const doneCount = computed(() => tasks.value.filter((t) => t.done).length)
-const allCount = computed(() => tasks.value.length)
+const taskScopeCounts = computed(() => {
+  const scopedTasks = showCompleted.value ? tasks.value : tasks.value.filter((task) => !task.done)
+  return {
+    all: scopedTasks.length,
+    personal: scopedTasks.filter((task) => task.personal).length,
+    shared: scopedTasks.filter((task) => !task.personal).length
+  }
+})
+const scopeOptionsWithCounts = computed(() =>
+  taskScopeOptions.map((option) => ({ ...option, count: taskScopeCounts.value[option.value] }))
+)
 
 function openNew() {
   editingTask.value = null
@@ -423,10 +460,17 @@ async function openExportedFile(filePath) {
 
 <template>
   <div class="task-list-view">
-    <header class="header">
-      <div>
+    <header class="page-head">
+      <div class="page-title">
         <h1>Công việc</h1>
-        <p class="subtitle">Bảng quản lý công việc và phân công nhiệm vụ phòng ban</p>
+        <p class="subline">
+          {{ todayLabel }} · <span class="clock">{{ clockLabel }}</span> ·
+          <template v-if="overdueCount">
+            <strong class="alert">{{ overdueCount }} việc quá hạn</strong><template v-if="dueTodayCount">, {{ dueTodayCount }} việc đến hạn hôm nay</template>.
+          </template>
+          <template v-else-if="dueTodayCount">{{ dueTodayCount }} việc đến hạn hôm nay.</template>
+          <template v-else>Không có việc nào quá hạn.</template>
+        </p>
       </div>
 
       <div class="actions">
@@ -439,23 +483,8 @@ async function openExportedFile(filePath) {
       </div>
     </header>
 
-    <div class="tabs">
-      <button class="tab" :class="{ active: !showCompleted && taskScope === 'all' }" @click="showCompleted = false; taskScope = 'all'">
-        Chưa hoàn thành <span class="count">{{ activeCount }}</span>
-      </button>
-      <button class="tab" :class="{ active: showCompleted && taskScope === 'all' }" @click="showCompleted = true; taskScope = 'all'">
-        Tất cả công việc <span class="count">{{ allCount }}</span>
-      </button>
-      <button class="tab" :class="{ active: taskScope === 'personal' }" @click="showCompleted = false; taskScope = 'personal'">
-        Cá nhân
-      </button>
-      <button class="tab" :class="{ active: taskScope === 'shared' }" @click="showCompleted = false; taskScope = 'shared'">
-        Chung
-      </button>
-    </div>
-
-    <div class="task-search">
-      <label class="task-search-field">
+    <div class="toolbar">
+      <label class="search" title="Tìm theo tên việc, người phụ trách, hạn, thẻ hoặc ghi chú">
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="7"></circle>
           <path d="m20 20-4-4"></path>
@@ -464,21 +493,33 @@ async function openExportedFile(filePath) {
           v-model="searchQuery"
           type="search"
           aria-label="Tìm công việc"
-          placeholder="Tìm theo tên việc, người phụ trách, hạn, thẻ hoặc ghi chú"
+          placeholder="Tìm việc, người phụ trách…"
           @keydown.esc="searchQuery = ''"
         />
+        <span v-if="isSearchActive" class="search-count" role="status">
+          {{ visibleTasks.length }} kết quả
+        </span>
         <button
           v-if="searchQuery"
           type="button"
-          class="task-search-clear"
+          class="search-clear"
           aria-label="Xóa nội dung tìm kiếm"
           title="Xóa tìm kiếm"
           @click="searchQuery = ''"
         >✕</button>
       </label>
-      <span v-if="isSearchActive" class="task-search-count" role="status">
-        {{ visibleTasks.length }} kết quả
-      </span>
+
+      <div class="filters">
+        <SegmentedControl
+          v-model="taskScope"
+          :options="scopeOptionsWithCounts"
+          label="Phạm vi công việc"
+        />
+        <div class="completed-toggle">
+          <span id="completed-toggle-label">Hiện việc đã hoàn thành</span>
+          <ToggleSwitch v-model="showCompleted" labelledby="completed-toggle-label" />
+        </div>
+      </div>
     </div>
 
     <div v-if="newChatMessage" class="chat-notice" role="status" aria-live="polite">
@@ -505,13 +546,15 @@ async function openExportedFile(filePath) {
       v-for="group in groups"
       :key="group.key"
       class="day-section"
+      :class="{ 'is-empty': group.tasks.length === 0 }"
       v-show="group.tasks.length || group.alwaysShow"
     >
       <h2 class="day-title" :class="group.tone">
         <span class="day-name">{{ group.title }}</span>
-        <span class="day-count">{{ group.tasks.length }}</span>
+        <span v-if="group.tone === 'today'" class="day-flag">Hôm nay</span>
+        <span v-if="group.tasks.length" class="day-count">{{ group.tasks.length }}</span>
+        <span v-else class="day-none">Không có việc</span>
       </h2>
-      <div v-if="group.tasks.length === 0" class="day-empty">Không có việc cần làm trong ngày này</div>
       <TaskCard
         v-for="task in group.tasks"
         :key="task.id"
@@ -534,15 +577,17 @@ async function openExportedFile(filePath) {
       @close="showForm = false"
     />
 
-    <div v-if="deleteCandidate" class="delete-overlay" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-      <section class="delete-dialog">
-        <div class="delete-icon" aria-hidden="true">!</div>
+    <div v-if="deleteCandidate" class="delete-overlay" role="presentation" @click.self="cancelDelete">
+      <section class="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+        <button class="delete-close" type="button" aria-label="Đóng" @click="cancelDelete">×</button>
         <h2 id="delete-title">Xóa công việc?</h2>
-        <p>Bạn có chắc muốn xóa công việc này không?</p>
-        <strong>{{ deleteCandidate.title }}</strong>
+        <p id="delete-description">
+          Công việc “<strong>{{ deleteCandidate.title }}</strong>” sẽ bị xóa vĩnh viễn.<br>
+          Thao tác này không thể hoàn tác.
+        </p>
         <div class="delete-actions">
-          <button class="btn btn-ghost" @click="cancelDelete">Hủy</button>
-          <button class="btn btn-danger" @click="confirmDelete">Xóa công việc</button>
+          <button class="btn btn-ghost" type="button" @click="cancelDelete">Hủy</button>
+          <button class="btn btn-danger" type="button" @click="confirmDelete">Xóa công việc</button>
         </div>
       </section>
     </div>
@@ -587,35 +632,13 @@ async function openExportedFile(filePath) {
         <div class="export-groups">
           <section class="export-group" aria-labelledby="export-scope-label">
             <h4 id="export-scope-label">Phạm vi</h4>
-            <div class="scope-segmented" role="radiogroup" aria-labelledby="export-scope-label">
-              <button
-                ref="scopeAllOption"
-                type="button"
-                role="radio"
-                :aria-checked="exportScope === 'all'"
-                :tabindex="exportScope === 'all' ? 0 : -1"
-                @click="chooseExportScope('all')"
-                @keydown="onScopeKeydown($event, 'all')"
-              >Tất cả</button>
-              <button
-                ref="scopePersonalOption"
-                type="button"
-                role="radio"
-                :aria-checked="exportScope === 'personal'"
-                :tabindex="exportScope === 'personal' ? 0 : -1"
-                @click="chooseExportScope('personal')"
-                @keydown="onScopeKeydown($event, 'personal')"
-              >Cá nhân</button>
-              <button
-                ref="scopeSharedOption"
-                type="button"
-                role="radio"
-                :aria-checked="exportScope === 'shared'"
-                :tabindex="exportScope === 'shared' ? 0 : -1"
-                @click="chooseExportScope('shared')"
-                @keydown="onScopeKeydown($event, 'shared')"
-              >Chung</button>
-            </div>
+            <SegmentedControl
+              ref="exportScopeControl"
+              v-model="exportScope"
+              :options="taskScopeOptions"
+              labelledby="export-scope-label"
+              block
+            />
           </section>
 
           <section class="export-group">
@@ -623,14 +646,7 @@ async function openExportedFile(filePath) {
               <div class="export-switch-copy">
                 <span id="include-completed-label" class="export-switch-label">Bao gồm việc đã hoàn thành</span>
               </div>
-              <button
-                type="button"
-                class="toggle-switch"
-                role="switch"
-                :aria-checked="exportIncludeCompleted"
-                aria-labelledby="include-completed-label"
-                @click="exportIncludeCompleted = !exportIncludeCompleted"
-              ><span></span></button>
+              <ToggleSwitch v-model="exportIncludeCompleted" labelledby="include-completed-label" />
             </div>
           </section>
 
@@ -642,17 +658,12 @@ async function openExportedFile(filePath) {
                   {{ isGroupByMemberDisabled(exportScope) ? 'Chỉ áp dụng cho công việc chung' : 'Mỗi người có một danh sách riêng.' }}
                 </span>
               </div>
-              <button
-                type="button"
-                class="toggle-switch"
-                role="switch"
-                :aria-checked="exportGroupByMember"
-                :aria-disabled="isGroupByMemberDisabled(exportScope)"
+              <ToggleSwitch
+                v-model="exportGroupByMember"
                 :disabled="isGroupByMemberDisabled(exportScope)"
-                aria-labelledby="group-by-member-label"
-                aria-describedby="group-by-member-hint"
-                @click="exportGroupByMember = !exportGroupByMember"
-              ><span></span></button>
+                labelledby="group-by-member-label"
+                describedby="group-by-member-hint"
+              />
             </div>
           </section>
         </div>
@@ -685,134 +696,141 @@ async function openExportedFile(filePath) {
   position: relative;
 }
 
-.header {
+/* ---- Page header ---- */
+.page-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  gap: 20px;
+  margin-bottom: 24px;
 }
 h1 {
+  margin: 0;
+  color: var(--text);
   font-size: 24px;
   font-weight: 700;
-  margin: 0 0 4px;
-  color: var(--text);
+  line-height: 1.2;
 }
-.subtitle {
-  color: var(--text-dim);
-  font-size: 13.5px;
-  margin: 0;
+.subline {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.subline .alert {
+  color: var(--pri-high);
+  font-weight: 600;
+}
+.clock {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 .actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 10px;
 }
 
-.tabs {
+/* ---- Toolbar ---- */
+.toolbar {
   display: flex;
-  gap: 6px;
-  margin-bottom: 22px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 28px;
 }
-.tab {
-  border: none;
-  background: transparent;
-  padding: 10px 14px;
-  font-weight: 600;
-  font-size: 13.5px;
-  color: var(--text-dim);
-  border-bottom: 2px solid transparent;
+.search {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  transition: all 0.12s ease;
-}
-.tab:hover {
-  color: var(--text);
-}
-.tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-.count {
-  background: var(--tag-gray-bg);
-  color: var(--tag-gray-fg);
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-weight: 700;
-}
-.tab.active .count {
-  background: var(--accent-subtle);
-  color: var(--accent);
-}
-
-.task-search {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: -8px 0 22px;
-}
-.task-search-field {
-  display: flex;
-  flex: 1;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  height: 40px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 11px;
   background: var(--panel);
   color: var(--text-dim);
-  box-shadow: var(--shadow-sm);
-  transition: border-color .15s ease, box-shadow .15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.task-search-field:focus-within {
+.search:focus-within {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
-.task-search-field > svg {
-  width: 18px;
-  height: 18px;
+.search > svg {
+  width: 17px;
+  height: 17px;
   flex: 0 0 auto;
 }
-.task-search-field input {
+.search input {
+  flex: 1;
   width: 100%;
   min-width: 0;
-  padding: 11px 0;
+  padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
   color: var(--text);
 }
-.task-search-field input:focus {
+.search input:focus {
   border: 0;
   box-shadow: none;
+  outline: none;
 }
-.task-search-field input::placeholder {
+.search input::placeholder {
   color: var(--text-light);
 }
-.task-search-field input::-webkit-search-cancel-button {
+.search input::-webkit-search-cancel-button {
   display: none;
 }
-.task-search-clear {
+.search-count {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.search-clear {
   display: grid;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
   color: var(--text-dim);
+  font-size: 12px;
 }
-.task-search-clear:hover {
+.search-clear:hover {
   background: var(--panel-hover);
   color: var(--text);
 }
-.task-search-count {
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.completed-toggle {
+  display: inline-flex;
   flex: 0 0 auto;
-  color: var(--text-dim);
-  font-size: 12px;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .filters {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
+/* ---- Notices ---- */
 .chat-notice {
   display: flex;
   align-items: center;
@@ -889,44 +907,39 @@ h1 {
   overflow-wrap: anywhere;
 }
 .empty {
-  color: var(--text-dim);
-  padding: 60px 20px;
-  text-align: center;
-  background: var(--panel);
-  border-radius: var(--radius-lg);
-  border: 1px dashed var(--border);
   margin: 20px 0;
-}
-.empty-icon {
-  font-size: 36px;
-  margin-bottom: 8px;
+  padding: 56px 20px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text-dim);
+  text-align: center;
 }
 .empty h3 {
+  margin: 0 0 4px;
+  color: var(--text);
   font-size: 16px;
   font-weight: 700;
-  color: var(--text);
-  margin: 0 0 4px;
 }
 .empty p {
-  font-size: 13px;
   margin: 0;
+  font-size: 13px;
 }
 
+/* ---- Day sections ---- */
 .day-section {
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 .day-title {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  margin: 0 0 10px;
-  padding-bottom: 6px;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
 }
 .day-title.today {
   color: var(--accent);
@@ -934,84 +947,114 @@ h1 {
 .day-title.overdue {
   color: var(--pri-high);
 }
-.day-count {
-  background: var(--tag-gray-bg);
-  color: var(--tag-gray-fg);
-  font-size: 10.5px;
-  padding: 1px 7px;
+.day-flag {
+  padding: 1px 8px;
   border-radius: 999px;
-  font-weight: 700;
-  text-transform: none;
-  letter-spacing: normal;
-}
-.day-title.today .day-count {
   background: var(--accent-subtle);
   color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
 }
-.day-title.overdue .day-count {
-  background: var(--tag-rose-bg);
-  color: var(--tag-rose-fg);
-}
-.day-empty {
+.day-count {
   color: var(--text-light);
   font-size: 12.5px;
-  padding: 6px 4px 10px;
-  font-style: italic;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.day-title.overdue .day-count {
+  color: var(--pri-high);
+  opacity: 0.7;
+}
+.day-none {
+  margin-left: auto;
+  color: var(--text-light);
+  font-size: 12px;
+  font-weight: 500;
 }
 
+.day-section.is-empty { margin-bottom: 0; }
+.day-section.is-empty .day-title { margin: 0; padding: 9px 0; border-bottom: 0; color: var(--text-dim); }
+.day-section.is-empty .day-title.today { color: var(--accent); }
+.day-section.is-empty + .day-section:not(.is-empty) { margin-top: 24px; }
+
+/* ---- Delete dialog ---- */
 .delete-overlay {
   position: fixed;
   inset: 0;
   z-index: 80;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgba(15, 23, 42, 0.42);
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.28);
 }
 .delete-dialog {
-  width: min(420px, 100%);
-  padding: 26px 28px 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  position: relative;
+  width: min(360px, 100%);
+  padding: 20px 18px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 14px;
   background: var(--panel);
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.24);
-  text-align: center;
-}
-.delete-icon {
-  width: 40px;
-  height: 40px;
-  margin: 0 auto 12px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--danger-subtle);
-  color: var(--danger-text);
-  font-size: 21px;
-  font-weight: 800;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.16);
 }
 .delete-dialog h2 {
-  margin: 0 0 10px;
+  margin: 0 32px 8px 0;
   color: var(--text);
-  font-size: 19px;
+  font-size: 17px;
+  font-weight: 650;
 }
 .delete-dialog p {
-  margin: 0 0 12px;
+  margin: 0 0 20px;
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
-.delete-dialog > strong {
-  display: block;
-  margin-bottom: 28px;
+.delete-dialog p strong {
   color: var(--text);
   overflow-wrap: anywhere;
 }
+.delete-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 19px;
+  line-height: 1;
+}
+.delete-close:hover { background: #F1F2F4; color: var(--text); }
 .delete-actions {
   display: flex;
-  justify-content: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.delete-actions .btn {
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+.delete-actions .btn-ghost {
+  background: #FFFFFF;
+  border-color: #D7D7DC;
+  color: var(--text);
+}
+.delete-actions .btn-danger {
+  border-color: #E92735;
+  background: #E92735;
+  color: #FFFFFF;
+}
+.delete-actions .btn-danger:hover {
+  border-color: #D91F2D;
+  background: #D91F2D;
 }
 
-/* Toast Notifications */
+/* ---- Toasts ---- */
 .undo-toast, .export-toast {
   position: fixed;
   left: 50%;
@@ -1029,7 +1072,6 @@ h1 {
   z-index: 60;
   animation: slideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
-
 .undo-message, .export-msg {
   display: flex;
   align-items: center;
@@ -1047,10 +1089,6 @@ h1 {
   font-size: 11px;
   font-weight: 700;
 }
-.word-icon {
-  font-size: 16px;
-}
-
 .undo-btn {
   border: none;
   background: rgba(255, 255, 255, 0.15);
@@ -1065,7 +1103,6 @@ h1 {
   background: rgba(255, 255, 255, 0.25);
   color: #FFFFFF;
 }
-
 .open-file-btn {
   border: none;
   background: #2563EB;
@@ -1080,7 +1117,7 @@ h1 {
   background: #1D4ED8;
 }
 
-/* Export Modal */
+/* ---- Export modal ---- */
 .export-modal {
   max-width: 500px;
 }
@@ -1090,18 +1127,10 @@ h1 {
   align-items: center;
   margin-bottom: 12px;
 }
-.modal-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.modal-icon {
-  font-size: 20px;
-}
 .modal-header h3 {
+  margin: 0;
   font-size: 16px;
   font-weight: 700;
-  margin: 0;
 }
 .close-btn {
   border: none;
@@ -1115,17 +1144,15 @@ h1 {
   background: #F1F5F9;
   color: var(--text);
 }
-
 .export-subtitle {
-  font-size: 13px;
-  color: var(--text-dim);
   margin: 5px 0 0;
+  color: var(--text-dim);
+  font-size: 13px;
 }
-
 .export-groups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
   margin-top: 20px;
 }
 .export-group h4 {
@@ -1134,42 +1161,6 @@ h1 {
   font-size: 12px;
   font-weight: 600;
 }
-
-.scope-segmented {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg);
-}
-.scope-segmented button {
-  min-height: 38px;
-  padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.scope-segmented button[aria-checked="true"] {
-  border-color: var(--border);
-  background: var(--panel);
-  color: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-.scope-segmented button:focus-visible,
-.toggle-switch:focus-visible,
-.close-btn:focus-visible,
-.modal-footer button:focus-visible {
-  outline: 3px solid var(--border-focus);
-  outline-offset: 2px;
-}
-
 .export-switch-row {
   display: flex;
   align-items: center;
@@ -1190,41 +1181,6 @@ h1 {
   color: var(--text-dim);
   font-size: 12px;
 }
-.toggle-switch {
-  position: relative;
-  width: 42px;
-  height: 24px;
-  flex: 0 0 42px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #d7dce5;
-  cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-}
-.toggle-switch span {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  transition: transform 0.15s ease;
-}
-.toggle-switch[aria-checked="true"] {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.toggle-switch[aria-checked="true"] span {
-  transform: translateX(18px);
-}
-.toggle-switch:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
 .export-count {
   min-height: 20px;
   margin: 18px 0 16px;
@@ -1232,11 +1188,15 @@ h1 {
   font-size: 13px;
   font-weight: 600;
 }
-
 .modal-footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+.close-btn:focus-visible,
+.modal-footer button:focus-visible {
+  outline: 3px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 @keyframes slideUp {

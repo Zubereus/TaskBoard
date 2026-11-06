@@ -50,8 +50,6 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
       <h1>Thống kê</h1>
     </header>
 
-    <p class="subtitle">Tổng quan tiến độ và khối lượng công việc của nhóm.</p>
-
     <div class="summary">
       <div class="summary-card">
         <span class="summary-value">{{ openTasks.length }}</span>
@@ -141,11 +139,6 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
 <style scoped>
 .header { margin-bottom: 6px; }
 h1 { font-size: 22px; margin: 0; }
-.subtitle {
-  color: var(--text-dim);
-  font-size: 13px;
-  margin: 0 0 22px;
-}
 .summary {
   display: flex;
   flex-wrap: wrap;
@@ -250,5 +243,36 @@ h1 { font-size: 22px; margin: 0; }
   font-size: 12px;
   line-height: 1.5;
   padding: 12px 0;
+}
+.chart-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.legend-swatch.late { background: var(--pri-high); }
+.legend-swatch.open { background: var(--bar-open); margin-left: 8px; }
+.legend-swatch.done { background: var(--accent); margin-left: 8px; }
+.footnote-detail { margin-left: auto; }
+@media (max-width: 560px) {
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bar-line {
+    grid-template-columns: minmax(80px, 1fr) auto;
+    gap: 6px 12px;
+  }
+  .bar-track { grid-column: 1 / -1; grid-row: 2; }
+  .bar-figure { font-size: 11.5px; }
+  .footnote-detail { flex-basis: 100%; margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar-seg { transition: none; }
 }
 </style>

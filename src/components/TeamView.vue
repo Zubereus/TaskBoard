@@ -162,10 +162,6 @@ function priorityClass(p) {
 <template>
   <div>
     <header class="header"><h1>Nhóm</h1></header>
-    <p class="hint">
-      Thiết bị đã kết nối sẽ tự xuất hiện trong danh sách; bạn cũng có thể thêm người đang ngoại tuyến.
-      Chấm xanh cho biết người đó đang kết nối.
-    </p>
 
     <div v-if="banner" class="banner" :class="{ error: banner.isError }">{{ banner.msg }}</div>
 
@@ -180,7 +176,7 @@ function priorityClass(p) {
       </div>
     </div>
 
-    <div v-if="employees.length === 0" class="empty">Chưa có thành viên nào — thêm ở trên.</div>
+    <div v-if="employees.length === 0" class="empty">Chưa có thành viên nào. Thêm ở trên.</div>
 
     <section v-for="section in rosterSections" :key="section.key" class="roster-section">
       <h2 class="section-title">{{ section.title }}</h2>
@@ -225,15 +221,16 @@ function priorityClass(p) {
       </ul>
     </template>
 
-    <div v-if="deleteCandidate" class="delete-overlay" role="dialog" aria-modal="true" aria-labelledby="delete-member-title">
-      <section class="delete-dialog">
-        <div class="delete-icon" aria-hidden="true">!</div>
+    <div v-if="deleteCandidate" class="delete-overlay" role="presentation" @click.self="cancelDelete">
+      <section class="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-member-title" aria-describedby="delete-member-description">
+        <button class="delete-close" type="button" aria-label="Đóng" @click="cancelDelete">×</button>
         <h2 id="delete-member-title">Xóa thành viên?</h2>
-        <p>Bạn có chắc muốn xóa thành viên này không?</p>
-        <strong>{{ deleteCandidate.name }}</strong>
+        <p id="delete-member-description">
+          Thành viên “<strong>{{ deleteCandidate.name }}</strong>” sẽ bị xóa và công việc được giao sẽ chuyển thành chưa giao.
+        </p>
         <div class="delete-actions">
-          <button class="btn btn-ghost" @click="cancelDelete">Hủy</button>
-          <button class="btn btn-danger" @click="confirmDelete">Xóa thành viên</button>
+          <button class="btn btn-ghost" type="button" @click="cancelDelete">Hủy</button>
+          <button class="btn btn-danger" type="button" @click="confirmDelete">Xóa thành viên</button>
         </div>
       </section>
     </div>
@@ -243,7 +240,6 @@ function priorityClass(p) {
 <style scoped>
 .header { margin-bottom: 6px; }
 h1 { font-size: 22px; margin: 0; }
-.hint { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; }
 .banner {
   background: #E6F4EA;
   color: #276B39;
@@ -342,49 +338,73 @@ h1 { font-size: 22px; margin: 0; }
   z-index: 80;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgba(15, 23, 42, 0.42);
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.28);
 }
 .delete-dialog {
-  width: min(420px, 100%);
-  padding: 26px 28px 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  position: relative;
+  width: min(360px, 100%);
+  padding: 20px 18px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 14px;
   background: var(--panel);
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.24);
-  text-align: center;
-}
-.delete-icon {
-  width: 40px;
-  height: 40px;
-  margin: 0 auto 12px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--danger-subtle);
-  color: var(--danger-text);
-  font-size: 21px;
-  font-weight: 800;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.16);
 }
 .delete-dialog h2 {
-  margin: 0 0 10px;
+  margin: 0 32px 8px 0;
   color: var(--text);
-  font-size: 19px;
+  font-size: 17px;
+  font-weight: 650;
 }
 .delete-dialog p {
-  margin: 0 0 12px;
+  margin: 0 0 20px;
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
-.delete-dialog > strong {
-  display: block;
-  margin-bottom: 28px;
+.delete-dialog p strong {
   color: var(--text);
   overflow-wrap: anywhere;
 }
+.delete-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 19px;
+  line-height: 1;
+}
+.delete-close:hover { background: #F1F2F4; color: var(--text); }
 .delete-actions {
   display: flex;
-  justify-content: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.delete-actions .btn {
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+.delete-actions .btn-ghost {
+  background: #FFFFFF;
+  border-color: #D7D7DC;
+  color: var(--text);
+}
+.delete-actions .btn-danger {
+  border-color: #E92735;
+  background: #E92735;
+  color: #FFFFFF;
+}
+.delete-actions .btn-danger:hover {
+  border-color: #D91F2D;
+  background: #D91F2D;
 }
 </style>

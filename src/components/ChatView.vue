@@ -158,7 +158,6 @@ onUnmounted(() => {
     <header class="chat-header">
       <div>
         <h1>Trò chuyện</h1>
-        <p>Trò chuyện nhóm hoặc nhắn riêng với thiết bị đang kết nối.</p>
       </div>
       <span class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
@@ -280,11 +279,6 @@ onUnmounted(() => {
   margin: 0 0 5px;
   color: var(--text);
   font-size: 23px;
-}
-.chat-header p {
-  margin: 0;
-  color: var(--text-dim);
-  font-size: 13px;
 }
 .connection-status {
   display: inline-flex;

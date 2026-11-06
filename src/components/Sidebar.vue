@@ -304,21 +304,13 @@ const lanPill = computed(() => {
 }
 
 .lan-widget {
-  padding: 7px 10px;
+  padding: 7px 10px 6px;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: background-color 0.12s ease;
 }
 .lan-widget:hover {
   background: #F1F5F9;
-}
-.lan-widget.online {
-  background: var(--success-subtle);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-.lan-widget.connecting {
-  background: var(--warning-subtle);
-  border: 1px solid rgba(245, 158, 11, 0.25);
 }
 .lan-widget.offline .widget-detail {
   font-family: inherit;
@@ -341,9 +333,12 @@ const lanPill = computed(() => {
   color: var(--warning-text);
 }
 .widget-detail {
-  font-size: 11px;
-  color: var(--text-dim);
+  overflow: hidden;
+  color: var(--text-light);
+  font-size: 10px;
   margin-left: 14px;
-  font-family: var(--font-mono);
+  font-family: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

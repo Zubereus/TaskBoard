@@ -86,9 +86,7 @@ async function saveCalendarChoice() {
 <template>
   <div class="help-view">
     <header class="header">
-      <p class="eyebrow">TaskBoard</p>
       <h1>Hướng dẫn sử dụng</h1>
-      <p class="subtitle">Thiết lập kết nối, đồng bộ lịch và các thao tác thường dùng.</p>
     </header>
 
     <div v-if="banner" class="banner" :class="{ error: banner.isError }">{{ banner.msg }}</div>
@@ -169,8 +167,8 @@ async function saveCalendarChoice() {
           </button>
         </div>
         <div class="command-explanations">
-          <p><strong>Dòng 1 — TCP 22236:</strong> mở cổng để các máy khác kết nối và đồng bộ dữ liệu với máy chủ.</p>
-          <p><strong>Dòng 2 — UDP 22237:</strong> mở cổng để các máy khác có thể tự động tìm thấy máy chủ khi quét mạng.</p>
+          <p><strong>Dòng 1 (TCP 22236):</strong> mở cổng để các máy khác kết nối và đồng bộ dữ liệu với máy chủ.</p>
+          <p><strong>Dòng 2 (UDP 22237):</strong> mở cổng để các máy khác có thể tự động tìm thấy máy chủ khi quét mạng.</p>
           <p class="firewall-note">Nếu lệnh báo <code>Access is denied</code>, cửa sổ chưa được mở bằng quyền Administrator. Nếu công ty quản lý máy tính bằng chính sách mạng, hãy nhờ quản trị viên thực hiện.</p>
         </div>
         <p class="firewall-note">
@@ -292,16 +290,7 @@ async function saveCalendarChoice() {
 <style scoped>
 .help-view { max-width: 660px; }
 .header { margin-bottom: 24px; }
-.eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-}
 h1 { margin: 0 0 4px; font-size: 25px; letter-spacing: -.03em; }
-.subtitle { margin: 0; color: var(--text-dim); font-size: 13.5px; }
 .guide-card {
   margin-bottom: 14px;
   padding: 21px 23px;
