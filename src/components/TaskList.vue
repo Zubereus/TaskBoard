@@ -475,15 +475,34 @@ async function openExportedFile(filePath) {
 
       <div class="actions">
         <button class="btn btn-secondary" @click="openExportDialog">
-          Xuất Word (.docx)
+          <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+          </svg>
+          Xuất Word
         </button>
         <button class="btn btn-primary" @click="openNew">
-          + Công việc mới
+          <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Công việc mới
         </button>
       </div>
     </header>
 
     <div class="toolbar">
+      <div class="toolbar-primary">
+        <SegmentedControl
+          v-model="taskScope"
+          :options="scopeOptionsWithCounts"
+          label="Phạm vi công việc"
+        />
+        <div class="completed-toggle">
+          <span id="completed-toggle-label">Hiện việc đã hoàn thành</span>
+          <ToggleSwitch v-model="showCompleted" labelledby="completed-toggle-label" />
+        </div>
+      </div>
+
       <label class="search" title="Tìm theo tên việc, người phụ trách, hạn, thẻ hoặc ghi chú">
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="7"></circle>
@@ -508,18 +527,6 @@ async function openExportedFile(filePath) {
           @click="searchQuery = ''"
         >✕</button>
       </label>
-
-      <div class="filters">
-        <SegmentedControl
-          v-model="taskScope"
-          :options="scopeOptionsWithCounts"
-          label="Phạm vi công việc"
-        />
-        <div class="completed-toggle">
-          <span id="completed-toggle-label">Hiện việc đã hoàn thành</span>
-          <ToggleSwitch v-model="showCompleted" labelledby="completed-toggle-label" />
-        </div>
-      </div>
     </div>
 
     <div v-if="newChatMessage" class="chat-notice" role="status" aria-live="polite">
@@ -555,16 +562,18 @@ async function openExportedFile(filePath) {
         <span v-if="group.tasks.length" class="day-count">{{ group.tasks.length }}</span>
         <span v-else class="day-none">Không có việc</span>
       </h2>
-      <TaskCard
-        v-for="task in group.tasks"
-        :key="task.id"
-        :task="task"
-        :assignee-names="assigneeNamesFor(task)"
-        :client-mode="clientMode"
-        @toggle="toggleDone"
-        @edit="openEdit"
-        @delete="remove"
-      />
+      <div v-if="group.tasks.length" class="task-cards-list">
+        <TaskCard
+          v-for="task in group.tasks"
+          :key="task.id"
+          :task="task"
+          :assignee-names="assigneeNamesFor(task)"
+          :client-mode="clientMode"
+          @toggle="toggleDone"
+          @edit="openEdit"
+          @delete="remove"
+        />
+      </div>
     </section>
 
     <!-- Create / Edit Form Modal -->
@@ -651,7 +660,10 @@ async function openExportedFile(filePath) {
           </section>
 
           <section class="export-group">
-            <div class="export-switch-row">
+            <div
+              class="export-switch-row"
+              :class="{ 'is-disabled': isGroupByMemberDisabled(exportScope) }"
+            >
               <div class="export-switch-copy">
                 <span id="group-by-member-label" class="export-switch-label">Chia theo thành viên</span>
                 <span id="group-by-member-hint" class="export-switch-hint">
@@ -699,10 +711,10 @@ async function openExportedFile(filePath) {
 /* ---- Page header ---- */
 .page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 24px;
+  gap: 16px;
+  margin-bottom: 20px;
 }
 h1 {
   margin: 0;
@@ -714,72 +726,92 @@ h1 {
 .subline {
   margin: 6px 0 0;
   color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13.5px;
+  font-weight: 450;
   line-height: 1.45;
 }
 .subline .alert {
-  color: var(--pri-high);
+  color: var(--danger-text);
   font-weight: 600;
 }
 .clock {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: 6px;
-  background: var(--accent-subtle);
-  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 .actions {
   display: flex;
+  align-items: center;
   flex: 0 0 auto;
-  gap: 10px;
+  gap: 8px;
+}
+.actions .btn-secondary {
+  color: var(--text);
 }
 
 /* ---- Toolbar ---- */
 .toolbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 16px;
-  margin-bottom: 28px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.toolbar-primary {
+  display: flex;
+  flex: 1 0 100%;
+  max-width: 760px;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.completed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  user-select: none;
 }
 .search {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
-  height: 40px;
+  gap: 8px;
+  width: 280px;
+  max-width: 100%;
+  height: 38px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text-dim);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .search:focus-within {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px rgba(54, 116, 192, 0.12);
 }
 .search > svg {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
   flex: 0 0 auto;
+  color: var(--text-dim);
 }
 .search input {
   flex: 1;
-  width: 100%;
   min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  box-shadow: none;
   color: var(--text);
+  font-size: 13px;
 }
 .search input:focus {
-  border: 0;
-  box-shadow: none;
   outline: none;
+  box-shadow: none;
 }
 .search input::placeholder {
   color: var(--text-light);
@@ -790,43 +822,41 @@ h1 {
 .search-count {
   flex: 0 0 auto;
   color: var(--text-dim);
-  font-size: 12px;
-  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 .search-clear {
   display: grid;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
   place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
   border-radius: 50%;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 11px;
+  cursor: pointer;
 }
 .search-clear:hover {
   background: var(--panel-hover);
   color: var(--text);
 }
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-.completed-toggle {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: 13px;
-  white-space: nowrap;
-}
-@media (max-width: 560px) {
-  .filters {
-    align-items: flex-start;
+
+@media (max-width: 860px) {
+  .toolbar {
     flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .toolbar-primary {
+    max-width: 100%;
+  }
+  .search {
+    width: 100%;
+  }
+}
+@media (max-width: 540px) {
+  .toolbar-primary {
+    gap: 10px 16px;
   }
 }
 
@@ -874,6 +904,7 @@ h1 {
   font-size: 12px;
   font-weight: 700;
   text-decoration: underline;
+  cursor: pointer;
 }
 
 .banner {
@@ -928,54 +959,80 @@ h1 {
 
 /* ---- Day sections ---- */
 .day-section {
-  margin-bottom: 28px;
+  margin-bottom: 22px;
 }
 .day-title {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 12px;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .day-title.today {
   color: var(--accent);
 }
 .day-title.overdue {
-  color: var(--pri-high);
+  color: var(--danger-text);
 }
 .day-flag {
-  padding: 1px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: var(--accent-subtle);
-  color: var(--accent);
-  font-size: 11.5px;
+  color: var(--accent-text);
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.35;
 }
 .day-count {
-  color: var(--text-light);
-  font-size: 12.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  line-height: 1.35;
 }
 .day-title.overdue .day-count {
-  color: var(--pri-high);
-  opacity: 0.7;
+  background: var(--tag-rose-bg);
+  color: var(--tag-rose-fg);
 }
 .day-none {
   margin-left: auto;
   color: var(--text-light);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 450;
 }
 
-.day-section.is-empty { margin-bottom: 0; }
-.day-section.is-empty .day-title { margin: 0; padding: 9px 0; border-bottom: 0; color: var(--text-dim); }
-.day-section.is-empty .day-title.today { color: var(--accent); }
-.day-section.is-empty + .day-section:not(.is-empty) { margin-top: 24px; }
+.day-section.is-empty {
+  margin-bottom: 0;
+}
+.day-section.is-empty .day-title {
+  margin: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+}
+.day-section.is-empty .day-title.today {
+  color: var(--accent);
+  font-weight: 600;
+}
+.day-section.is-empty + .day-section:not(.is-empty) {
+  margin-top: 18px;
+}
+
+.task-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
 /* ---- Delete dialog ---- */
 .delete-overlay {
@@ -1026,8 +1083,12 @@ h1 {
   color: var(--text-dim);
   font-size: 19px;
   line-height: 1;
+  cursor: pointer;
 }
-.delete-close:hover { background: #F1F2F4; color: var(--text); }
+.delete-close:hover {
+  background: #F1F2F4;
+  color: var(--text);
+}
 .delete-actions {
   display: flex;
   justify-content: flex-end;
@@ -1097,6 +1158,7 @@ h1 {
   font-size: 12.5px;
   padding: 5px 10px;
   border-radius: var(--radius-sm);
+  cursor: pointer;
   transition: all 0.12s ease;
 }
 .undo-btn:hover {
@@ -1105,16 +1167,17 @@ h1 {
 }
 .open-file-btn {
   border: none;
-  background: #2563EB;
+  background: var(--accent);
   color: #FFFFFF;
   font-weight: 700;
   font-size: 12.5px;
   padding: 5px 12px;
   border-radius: var(--radius-sm);
+  cursor: pointer;
   transition: all 0.12s ease;
 }
 .open-file-btn:hover {
-  background: #1D4ED8;
+  background: var(--accent-hover);
 }
 
 /* ---- Export modal ---- */
@@ -1139,6 +1202,7 @@ h1 {
   font-size: 16px;
   padding: 4px 8px;
   border-radius: 4px;
+  cursor: pointer;
 }
 .close-btn:hover {
   background: #F1F5F9;
@@ -1167,6 +1231,9 @@ h1 {
   justify-content: space-between;
   gap: 16px;
 }
+.export-switch-row.is-disabled {
+  opacity: 0.55;
+}
 .export-switch-copy {
   display: flex;
   flex-direction: column;
@@ -1194,13 +1261,32 @@ h1 {
   gap: 10px;
 }
 .close-btn:focus-visible,
-.modal-footer button:focus-visible {
-  outline: 3px solid var(--border-focus);
+.modal-footer button:focus-visible,
+.search-clear:focus-visible,
+.chat-notice-action:focus-visible,
+.delete-close:focus-visible,
+.undo-btn:focus-visible,
+.open-file-btn:focus-visible {
+  outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
 
 @keyframes slideUp {
   from { opacity: 0; transform: translate(-50%, 10px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search,
+  .btn,
+  .undo-toast,
+  .export-toast,
+  .delete-close,
+  .close-btn,
+  .undo-btn,
+  .open-file-btn {
+    transition: none !important;
+    animation: none !important;
+  }
 }
 </style>

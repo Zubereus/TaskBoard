@@ -93,14 +93,11 @@ export function vnDayLabel(dateStr) {
   return `${VN_WEEKDAY_LABELS[wd - 1]}, ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`
 }
 
-// Short weekday-only label used for the weekly section headers, e.g.
-// "Thứ Hai · 28/07 (Hôm nay)".
+// Short weekday label used with a separate "Hôm nay" badge in the section header.
 export function vnWeekdayHeader(dateStr) {
   const wd = isoWeekday(dateStr)
   const { m, d } = parseDateStr(dateStr)
-  const today = vnTodayStr()
-  const suffix = dateStr === today ? ' (Hôm nay)' : ''
-  return `${VN_WEEKDAY_LABELS[wd - 1]} · ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}${suffix}`
+  return `${VN_WEEKDAY_LABELS[wd - 1]} · ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`
 }
 
 // Adds `n` months to a 'YYYY-MM-DD' string, clamping the day if the

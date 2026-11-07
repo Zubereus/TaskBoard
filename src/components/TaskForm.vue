@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import DateInput from './DateInput.vue'
 import { normalizeRecurring } from '../utils/vnDate'
 import { normalizeReminderDays } from '../utils/taskWorkflow'
+import { tagColorFor } from '../utils/tagColor'
 
 const props = defineProps({ task: Object, calendarConnected: Boolean, employees: Array })
 const emit = defineEmits(['save', 'close'])
@@ -78,7 +79,12 @@ function submit() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((text) => ({ text, color: 'gray' }))
+    .map((text) => {
+      const existingTag = props.task?.tags?.find(
+        (tag) => tag.text.trim().toLocaleLowerCase() === text.toLocaleLowerCase()
+      )
+      return { text, color: tagColorFor(text, existingTag?.color) }
+    })
 
   emit('save', {
     title,

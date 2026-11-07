@@ -4,17 +4,17 @@
   --panel-hover: #F8FAFC;
   --border: #E2E8F0;
   --border-subtle: #EDF2F7;
-  --border-focus: #3B82F6;
+  --border-focus: #3674C0;
 
   --text: #0F172A;
   --text-muted: #475569;
   --text-dim: #64748B;
   --text-light: #94A3B8;
 
-  --accent: #2563EB;
-  --accent-hover: #1D4ED8;
+  --accent: #3674C0;
+  --accent-hover: #2F67AA;
   --accent-subtle: #EFF6FF;
-  --accent-text: #1D4ED8;
+  --accent-text: #3674C0;
 
   --success: #10B981;
   --success-subtle: #ECFDF5;
@@ -119,11 +119,11 @@ input:focus, select:focus, textarea:focus {
 .btn-primary {
   background: var(--accent);
   color: #FFFFFF;
-  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
+  box-shadow: 0 1px 3px rgba(54, 116, 192, 0.3);
 }
 .btn-primary:hover {
   background: var(--accent-hover);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 4px 12px rgba(54, 116, 192, 0.35);
 }
 
 .btn-secondary {
