@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import TaskList from './components/TaskList.vue'
 import StatsView from './components/StatsView.vue'
@@ -7,6 +7,8 @@ import TeamView from './components/TeamView.vue'
 import LanView from './components/LanView.vue'
 import ChatView from './components/ChatView.vue'
 import HelpView from './components/HelpView.vue'
+import ProfileClaimModal from './components/ProfileClaimModal.vue'
+import { formatOverdueAge } from './utils/overdue'
 
 const view = ref('tasks')
 const alarms = ref([])
@@ -19,6 +21,97 @@ let removeAlarmListener
 let removeAlarmFocusListener
 let removeChatListener
 let removeLanStatusListener
+let removeDataSyncListener
+
+// Persistent list of this person's overdue tasks. It stays until the task is
+// done or acknowledged, so it still tells them what they missed after they come
+// back to the desk, whether or not a toast was seen.
+const OVERDUE_PREVIEW_COUNT = 5
+const overdueTasks = ref([])
+const overdueExpanded = ref(false)
+const clockNow = ref(Date.now())
+let removeOverdueListener
+let clockTimer
+
+const visibleOverdue = computed(() =>
+  overdueExpanded.value ? overdueTasks.value : overdueTasks.value.slice(0, OVERDUE_PREVIEW_COUNT)
+)
+const hiddenOverdueCount = computed(() => overdueTasks.value.length - visibleOverdue.value.length)
+
+function overdueAge(entry) {
+  return formatOverdueAge(Math.floor((clockNow.value - entry.overdueSince) / 60000))
+}
+
+async function loadOverdue() {
+  try {
+    overdueTasks.value = await window.api.overdue.list()
+  } catch (err) {
+    console.warn('Không tải được danh sách quá hạn:', err)
+  }
+}
+
+async function acknowledgeOverdue(taskId) {
+  try {
+    overdueTasks.value = await window.api.overdue.acknowledge(taskId)
+  } catch (err) {
+    console.warn('Không thể xác nhận công việc quá hạn:', err)
+  }
+}
+
+async function acknowledgeAllOverdue() {
+  try {
+    overdueTasks.value = await window.api.overdue.acknowledgeAll()
+  } catch (err) {
+    console.warn('Không thể xác nhận các công việc quá hạn:', err)
+  }
+}
+
+// Old employee entries (from before tasks were tied to a device ID) that this
+// person can claim, so tasks assigned to them start notifying this machine.
+const claimState = ref({ personId: '', resolved: null, candidates: [] })
+const claimDeferred = ref(false)
+const claimBusy = ref(false)
+const claimError = ref('')
+const claimPending = computed(() => !claimState.value.resolved && claimState.value.candidates.length > 0)
+
+function ipcMessage(err) {
+  return String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+}
+
+async function loadClaimState() {
+  try {
+    claimState.value = await window.api.profile.getClaimState()
+  } catch (err) {
+    console.warn('Không tải được danh sách hồ sơ cũ:', err)
+  }
+}
+
+async function claimProfile(legacyId) {
+  claimBusy.value = true
+  claimError.value = ''
+  try {
+    await window.api.profile.claim(legacyId)
+    await loadClaimState()
+  } catch (err) {
+    claimError.value = ipcMessage(err)
+    await loadClaimState()
+  } finally {
+    claimBusy.value = false
+  }
+}
+
+async function declineClaim() {
+  claimBusy.value = true
+  claimError.value = ''
+  try {
+    await window.api.profile.decline()
+    await loadClaimState()
+  } catch (err) {
+    claimError.value = ipcMessage(err)
+  } finally {
+    claimBusy.value = false
+  }
+}
 
 function updateLanIdentity(status) {
   lanMode.value = status?.mode || 'standalone'
@@ -75,6 +168,17 @@ async function focusAlarm(taskId) {
 }
 
 onMounted(async () => {
+  loadClaimState()
+  loadOverdue()
+  removeOverdueListener = window.api.overdue.onChanged((next) => {
+    overdueTasks.value = next
+  })
+  clockTimer = setInterval(() => {
+    clockNow.value = Date.now()
+  }, 60 * 1000)
+  // Employees arrive after connecting to a host, and other people's claims
+  // remove entries, so refresh whenever LAN data changes.
+  removeDataSyncListener = window.api.lan.onDataSync(loadClaimState)
   removeAlarmFocusListener = window.api.alarms.onFocus(focusAlarm)
   removeAlarmListener = window.api.alarms.onChanged((next) => {
     alarms.value = next.filter((alarm) => !alarm.acknowledgedAt)
@@ -106,6 +210,9 @@ onUnmounted(() => {
   removeAlarmFocusListener?.()
   removeChatListener?.()
   removeLanStatusListener?.()
+  removeDataSyncListener?.()
+  removeOverdueListener?.()
+  clearInterval(clockTimer)
 })
 </script>
 
@@ -113,6 +220,29 @@ onUnmounted(() => {
   <div class="shell">
     <Sidebar v-model="view" :chat-unread-count="chatUnreadCount" />
     <main class="content">
+      <section v-if="claimPending && claimDeferred" class="claim-banner">
+        <span>Một số công việc cũ chưa được gắn với bạn nên máy này có thể không nhắc đúng việc.</span>
+        <button class="btn btn-primary" type="button" @click="claimDeferred = false">Chọn tên của tôi</button>
+      </section>
+      <section v-if="overdueTasks.length" class="overdue-panel" aria-live="polite">
+        <div class="overdue-head">
+          <strong>{{ overdueTasks.length }} công việc đã quá hạn</strong>
+          <button v-if="overdueTasks.length > 1" class="btn btn-ghost" type="button" @click="acknowledgeAllOverdue">
+            Đã nhận tất cả
+          </button>
+        </div>
+        <div v-for="entry in visibleOverdue" :key="entry.key" class="overdue-row">
+          <button class="overdue-title" type="button" @click="view = 'tasks'">{{ entry.title }}</button>
+          <span class="overdue-age">{{ overdueAge(entry) }}</span>
+          <button class="btn btn-secondary" type="button" @click="acknowledgeOverdue(entry.taskId)">Đã nhận</button>
+        </div>
+        <button v-if="hiddenOverdueCount > 0" class="overdue-more" type="button" @click="overdueExpanded = true">
+          Hiện thêm {{ hiddenOverdueCount }} công việc
+        </button>
+        <button v-else-if="overdueExpanded && overdueTasks.length > OVERDUE_PREVIEW_COUNT" class="overdue-more" type="button" @click="overdueExpanded = false">
+          Thu gọn
+        </button>
+      </section>
       <section v-if="alarms.length" class="alarm-panel" aria-live="assertive">
         <strong>Đang có {{ alarms.length }} báo thức chưa xác nhận</strong>
         <div v-for="alarm in alarms" :key="alarm.id" class="alarm-row">
@@ -136,6 +266,15 @@ onUnmounted(() => {
         @open-lan-settings="view = 'lan'"
       />
     </main>
+    <ProfileClaimModal
+      v-if="claimPending && !claimDeferred"
+      :candidates="claimState.candidates"
+      :busy="claimBusy"
+      :error="claimError"
+      @claim="claimProfile"
+      @decline="declineClaim"
+      @later="claimDeferred = true"
+    />
     <div v-if="focusedAlarm" class="alarm-overlay" role="dialog" aria-modal="true">
       <section class="alarm-dialog">
         <div class="alarm-dialog-icon">!</div>
@@ -187,6 +326,77 @@ onUnmounted(() => {
   border-radius: var(--radius-md);
   background: #fff8e8;
   color: #7a4d00;
+}
+.overdue-panel {
+  max-width: 760px;
+  margin: 0 auto 16px;
+  padding: 14px 16px;
+  border: 1px solid #f1a7a0;
+  border-radius: var(--radius-md);
+  background: #fff1f0;
+  color: #7a1f16;
+}
+.overdue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.overdue-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(122, 31, 22, 0.12);
+}
+.overdue-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overdue-title:hover {
+  text-decoration: underline;
+}
+.overdue-age {
+  flex-shrink: 0;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.overdue-more {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.claim-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 760px;
+  margin: 0 auto 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
 }
 .alarm-row {
   display: flex;

@@ -4,7 +4,18 @@ export function assigneesOf(task) {
   return task.assigneeIds || (task.assigneeId ? [task.assigneeId] : [])
 }
 
-export function calculateStats(tasks = [], employees = [], today) {
+// `nowTime` ('HH:MM', Vietnam time) is optional. When given, a task due today
+// with a time is overdue from that time on, matching the overdue panel and the
+// tray tooltip. Without it, only whole past days count as overdue.
+export function calculateStats(taskInput = [], employeeInput = [], today, nowTime = null) {
+  const tasks = Array.isArray(taskInput) ? taskInput : []
+  const employees = Array.isArray(employeeInput) ? employeeInput : []
+  const isOverdue = (task) => {
+    if (task.done || !task.dueDate) return false
+    const days = daysBetween(today, task.dueDate)
+    if (days === null) return false
+    return days < 0 || (days === 0 && Boolean(nowTime) && Boolean(task.dueTime) && task.dueTime <= nowTime)
+  }
   const validToday = parseDateStr(today)
   const weekStart = validToday ? addDaysStr(today, -(isoWeekday(today) - 1)) : null
   const sharedTasks = tasks.filter((task) => !task.personal)
@@ -20,28 +31,23 @@ export function calculateStats(tasks = [], employees = [], today) {
         assigned: assigned.length,
         completionRate: assigned.length ? completed / assigned.length : null,
         openAssigned: assigned.filter((task) => !task.done).length,
-        overdue: assigned.filter(
-          (task) => !task.done && task.dueDate && daysBetween(today, task.dueDate) < 0
-        ).length
+        overdue: assigned.filter(isOverdue).length
       }
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
 
-  const overdueTasks = tasks.filter(
-    (task) => !task.done && task.dueDate && daysBetween(today, task.dueDate) < 0
-  )
+  const overdueTasks = tasks.filter(isOverdue)
   const openTasks = tasks.filter((task) => !task.done)
   const unassignedOpenTasks = sharedTasks.filter(
     (task) => !task.done && !assigneesOf(task).some((id) => employeeIds.has(id))
   )
   const unassignedOverdueTasks = sharedTasks.filter(
-    (task) => !task.done && task.dueDate &&
-      daysBetween(today, task.dueDate) < 0 &&
-      !assigneesOf(task).some((id) => employeeIds.has(id))
+    (task) => isOverdue(task) && !assigneesOf(task).some((id) => employeeIds.has(id))
   )
+  // A task that already counts as overdue is not also "due soon".
   const dueSoonTasks = openTasks.filter((task) => {
     const daysUntilDue = task.dueDate ? daysBetween(today, task.dueDate) : null
-    return daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7
+    return daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7 && !isOverdue(task)
   })
   const completedThisWeek = weekStart
     ? tasks.filter((task) => {

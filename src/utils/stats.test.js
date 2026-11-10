@@ -178,4 +178,35 @@ describe('task statistics', () => {
     expect(result.unassignedOpenTasks).toBe(1)
     expect(result.unassignedOverdueTasks).toBe(0)
   })
+
+  it('treats a timed task due earlier today as overdue when the current time is known', () => {
+    const tasks = [
+      { id: 'passed', dueDate: '2026-11-09', dueTime: '07:00', assigneeIds: ['a'] },
+      { id: 'later', dueDate: '2026-11-09', dueTime: '18:00', assigneeIds: ['a'] },
+      { id: 'all-day', dueDate: '2026-11-09', assigneeIds: ['a'] },
+      { id: 'exactly-now', dueDate: '2026-11-09', dueTime: '09:30', assigneeIds: ['a'] }
+    ]
+    const stats = calculateStats(tasks, [{ id: 'a', name: 'An' }], '2026-11-09', '09:30')
+    expect(stats.overdueTasks.map((task) => task.id)).toEqual(['passed', 'exactly-now'])
+    expect(stats.rows[0].overdue).toBe(2)
+    // overdue tasks are not also counted as due soon
+    expect(stats.dueSoonTasks.map((task) => task.id)).toEqual(['later', 'all-day'])
+  })
+
+  it('keeps the whole-day rule when no current time is given', () => {
+    const tasks = [{ id: 'passed', dueDate: '2026-11-09', dueTime: '07:00' }]
+    const stats = calculateStats(tasks, [], '2026-11-09')
+    expect(stats.overdueTasks).toEqual([])
+    expect(stats.dueSoonTasks).toHaveLength(1)
+  })
+
+  it('counts timed overdue tasks in the unassigned-overdue figure too', () => {
+    const tasks = [{ id: 'orphan', dueDate: '2026-11-09', dueTime: '07:00', assigneeIds: ['gone'] }]
+    expect(calculateStats(tasks, [], '2026-11-09', '12:00').unassignedOverdueTasks).toBe(1)
+  })
+
+  it('does not throw on null task or employee lists', () => {
+    expect(() => calculateStats(null, null, '2026-11-09')).not.toThrow()
+    expect(calculateStats(null, null, '2026-11-09').rows).toEqual([])
+  })
 })

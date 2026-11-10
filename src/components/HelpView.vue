@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import ToggleSwitch from './ToggleSwitch.vue'
 
 const settings = ref({ clientId: '', clientSecret: '', calendarId: 'primary' })
 const status = ref({ configured: false, connected: false })
@@ -27,6 +28,19 @@ onMounted(load)
 onUnmounted(() => {
   if (copiedFirewallTimer) clearTimeout(copiedFirewallTimer)
 })
+
+const cornerWidgetEnabled = computed(() => settings.value.cornerWidgetEnabled !== false)
+
+async function setCornerWidget(enabled) {
+  const previous = settings.value.cornerWidgetEnabled
+  settings.value = { ...settings.value, cornerWidgetEnabled: enabled }
+  try {
+    await window.api.settings.save({ cornerWidgetEnabled: enabled })
+  } catch (err) {
+    settings.value = { ...settings.value, cornerWidgetEnabled: previous }
+    flash(err.message, true)
+  }
+}
 
 function copyFirewallCommand() {
   const command = 'netsh advfirewall firewall add rule name="TaskBoard" dir=in action=allow protocol=TCP localport=22236\nnetsh advfirewall firewall add rule name="TaskBoard discovery" dir=in action=allow protocol=UDP localport=22237'
@@ -265,6 +279,37 @@ async function saveCalendarChoice() {
       <div class="section-title">
         <span class="step">06</span>
         <div>
+          <h2>Công việc quá hạn</h2>
+          <p>Ba cách để không bỏ sót việc khi bạn vắng mặt.</p>
+        </div>
+      </div>
+      <ul class="tips">
+        <li><strong>Bảng quá hạn:</strong> nằm ở đầu ứng dụng, giữ nguyên cho đến khi bạn hoàn thành công việc hoặc bấm <strong>Đã nhận</strong>.</li>
+        <li><strong>Biểu tượng khay hệ thống:</strong> bấm một lần để xem nhanh việc quá hạn và việc hôm nay; bấm ra ngoài để đóng. Bấm đúp để mở TaskBoard.</li>
+        <li><strong>Thông báo chờ bạn quay lại:</strong> khi máy không có người dùng (không di chuột hoặc gõ phím trong 10 phút, khóa màn hình hoặc ngủ), thông báo đến hạn và nhắc việc được giữ lại; báo thức cũng không kêu. Khi di chuột, gõ phím hoặc mở khóa, các thông báo đang chờ sẽ hiện trên màn hình và báo thức sẽ kêu.</li>
+        <li><strong>Khi quay lại máy:</strong> sau khi vắng mặt từ 5 phút, TaskBoard tóm tắt những việc vừa quá hạn trong lúc bạn đi.</li>
+      </ul>
+      <div class="setting-row">
+        <div>
+          <strong id="corner-widget-label">Cửa sổ nhắc nhỏ ở góc màn hình</strong>
+          <p id="corner-widget-hint">
+            Tự hiện khi có việc mới quá hạn mà bạn chưa thấy. Không chiếm bàn phím và không ghim lên trên các ứng dụng khác.
+            Bấm <strong>Ẩn</strong> để tắt cho đến khi có việc quá hạn mới. Khi tắt cài đặt này, biểu tượng khay và bảng quá hạn vẫn hoạt động.
+          </p>
+        </div>
+        <ToggleSwitch
+          :model-value="cornerWidgetEnabled"
+          labelledby="corner-widget-label"
+          describedby="corner-widget-hint"
+          @update:model-value="setCornerWidget"
+        />
+      </div>
+    </section>
+
+    <section class="guide-card">
+      <div class="section-title">
+        <span class="step">07</span>
+        <div>
           <h2>Khi có sự cố</h2>
           <p>Cách xử lý nhanh các trạng thái thường gặp.</p>
         </div>
@@ -323,6 +368,23 @@ code {
   margin: 18px 0 0 27px;
   padding-top: 17px;
   border-top: 1px solid var(--border);
+}
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 17px 0 0 27px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+.setting-row p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 .note {
   margin: 17px 0 0 27px;

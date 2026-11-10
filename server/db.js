@@ -8,6 +8,18 @@ const path = require('path')
 class JsonCollection {
   constructor(dataDir, name) {
     this.file = path.join(dataDir, `${name}.json`)
+    this._queue = Promise.resolve()
+  }
+
+  // Runs `work` once every earlier exclusive operation on this collection has
+  // finished. Every write here is read-modify-write on one file, so two of them
+  // running at once (several LAN events arriving together, two clients adding a
+  // task at the same moment) used to overwrite each other and lose records.
+  // `work` must not call insert/update/remove on this same collection.
+  exclusive(work) {
+    const run = this._queue.then(work)
+    this._queue = run.then(() => undefined, () => undefined)
+    return run
   }
 
   async _read() {
@@ -43,28 +55,34 @@ class JsonCollection {
     return records.find((r) => r.id === id) || null
   }
 
-  async insert(record) {
-    const records = await this._read()
-    const withId = { ...record, id: record.id || cryptoRandomId() }
-    records.push(withId)
-    await this._write(records)
-    return withId
+  insert(record) {
+    return this.exclusive(async () => {
+      const records = await this._read()
+      const withId = { ...record, id: record.id || cryptoRandomId() }
+      records.push(withId)
+      await this._write(records)
+      return withId
+    })
   }
 
-  async update(id, patch) {
-    const records = await this._read()
-    const idx = records.findIndex((r) => r.id === id)
-    if (idx === -1) return null
-    records[idx] = { ...records[idx], ...patch, id }
-    await this._write(records)
-    return records[idx]
+  update(id, patch) {
+    return this.exclusive(async () => {
+      const records = await this._read()
+      const idx = records.findIndex((r) => r.id === id)
+      if (idx === -1) return null
+      records[idx] = { ...records[idx], ...patch, id }
+      await this._write(records)
+      return records[idx]
+    })
   }
 
-  async remove(id) {
-    const records = await this._read()
-    const next = records.filter((r) => r.id !== id)
-    await this._write(next)
-    return records.length !== next.length
+  remove(id) {
+    return this.exclusive(async () => {
+      const records = await this._read()
+      const next = records.filter((r) => r.id !== id)
+      await this._write(next)
+      return records.length !== next.length
+    })
   }
 }
 

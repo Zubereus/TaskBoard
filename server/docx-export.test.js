@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAssigneeBreakdown,
-  filterTasksForExport,
   generateTasksDocx
 } from './docx-export.js'
-import { countTasksForExport, filterTasksForExport } from './export-filter.mjs'
+import {
+  countTasksForExport,
+  filterOverdueTasks,
+  filterTasksForExport
+} from './export-filter.mjs'
 
 describe('Word export assignee breakdown', () => {
   const employees = [
@@ -55,6 +58,33 @@ describe('Word export assignee breakdown', () => {
       { onlyPending: true, includeAssigneeBreakdown: true }
     )
 
+    expect(document.subarray(0, 2).toString()).toBe('PK')
+  })
+
+  it('keeps per-member task breakdown aligned with overdue-only exports', async () => {
+    const tasks = [
+      { title: 'Late shared task', assigneeIds: ['a', 'b'], dueDate: '2026-11-09', done: false },
+      { title: 'Not overdue', assigneeIds: ['a'], dueDate: '2026-11-10', dueTime: '15:00', done: false },
+      { title: 'Completed late task', assigneeIds: ['a'], dueDate: '2026-11-09', done: true },
+      { title: 'Unassigned late task', dueDate: '2026-11-09', done: false }
+    ]
+    const filtered = filterOverdueTasks(
+      filterTasksForExport(tasks, 'all', false),
+      '2026-11-10',
+      '14:00'
+    )
+
+    expect(buildAssigneeBreakdown(filtered, employees, false)).toEqual([
+      { name: 'An', tasks: [{ title: 'Late shared task', done: false, due: '09/11/2026' }] },
+      { name: 'Bình', tasks: [{ title: 'Late shared task', done: false, due: '09/11/2026' }] }
+    ])
+
+    const document = await generateTasksDocx(filtered, employees, {
+      onlyPending: false,
+      onlyOverdue: true,
+      nowTime: '14:00',
+      includeAssigneeBreakdown: true
+    })
     expect(document.subarray(0, 2).toString()).toBe('PK')
   })
 })

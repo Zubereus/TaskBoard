@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import personProfileModule from './person-profile.js'
 
-const { reconcilePersonProfile } = personProfileModule
+const { reconcilePersonProfile, claimLegacyProfile, listClaimableProfiles, isLegacyEmployeeId } = personProfileModule
 
 class MemoryCollection {
   constructor(records = []) {
@@ -79,5 +79,73 @@ describe('person profile migration', () => {
 
     expect(await employees.list()).toHaveLength(3)
     expect((await tasks.list())[0].assigneeIds).toEqual(['legacy-1'])
+  })
+})
+
+const PERSON_ID = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f'
+
+describe('claiming a legacy profile', () => {
+  it('lists only entries without a device-generated ID as claimable', async () => {
+    const employees = new MemoryCollection([
+      { id: 'lq3k9x1abc', name: 'Nguyễn Văn A', role: 'Dev' },
+      { id: PERSON_ID, name: 'DESKTOP-9KQ2' }
+    ])
+    expect(await listClaimableProfiles(employees)).toEqual([
+      { id: 'lq3k9x1abc', name: 'Nguyễn Văn A', role: 'Dev' }
+    ])
+    expect(isLegacyEmployeeId(PERSON_ID)).toBe(false)
+  })
+
+  it('moves tasks to the stable ID even when the names differ', async () => {
+    const employees = new MemoryCollection([
+      { id: 'legacy-1', name: 'Nguyễn Văn A', role: 'Dev' },
+      { id: PERSON_ID, name: 'DESKTOP-9KQ2', role: '' }
+    ])
+    const tasks = new MemoryCollection([
+      { id: 't1', assigneeIds: ['legacy-1', 'other'] },
+      { id: 't2', assigneeId: 'legacy-1' },
+      { id: 't3', assigneeIds: ['other'] }
+    ])
+
+    const result = await claimLegacyProfile(employees, tasks, { personId: PERSON_ID, legacyId: 'legacy-1' })
+
+    expect(await employees.list()).toEqual([{ id: PERSON_ID, name: 'Nguyễn Văn A', role: 'Dev' }])
+    expect((await tasks.list()).map((task) => task.assigneeIds)).toEqual([
+      [PERSON_ID, 'other'],
+      [PERSON_ID],
+      ['other']
+    ])
+    expect(result.migratedEmployeeIds).toEqual(['legacy-1'])
+    expect(result.updatedTasks).toHaveLength(2)
+    expect(result.employee.name).toBe('Nguyễn Văn A')
+  })
+
+  it('creates the device profile when it does not exist yet', async () => {
+    const employees = new MemoryCollection([{ id: 'legacy-1', name: 'Trang' }])
+    const tasks = new MemoryCollection([{ id: 't1', assigneeIds: ['legacy-1'] }])
+    await claimLegacyProfile(employees, tasks, { personId: PERSON_ID, legacyId: 'legacy-1' })
+    expect(await employees.list()).toEqual([{ id: PERSON_ID, name: 'Trang', role: '' }])
+  })
+
+  it('rejects a second claim of the same entry and device-owned profiles', async () => {
+    const employees = new MemoryCollection([{ id: 'legacy-1', name: 'Trang' }, { id: PERSON_ID, name: 'PC' }])
+    const tasks = new MemoryCollection([])
+    await claimLegacyProfile(employees, tasks, { personId: PERSON_ID, legacyId: 'legacy-1' })
+
+    await expect(
+      claimLegacyProfile(employees, tasks, { personId: 'ffffffff-0000-4000-8000-000000000000', legacyId: 'legacy-1' })
+    ).rejects.toThrow('đã được người khác nhận')
+    await expect(
+      claimLegacyProfile(employees, tasks, { personId: 'ffffffff-0000-4000-8000-000000000000', legacyId: PERSON_ID })
+    ).rejects.toThrow('thuộc về một thiết bị')
+  })
+
+  it('truncates long names to the display-name limit', async () => {
+    const employees = new MemoryCollection([{ id: 'legacy-1', name: 'x'.repeat(60) }])
+    const result = await claimLegacyProfile(employees, new MemoryCollection([]), {
+      personId: PERSON_ID,
+      legacyId: 'legacy-1'
+    })
+    expect(result.employee.name).toHaveLength(40)
   })
 })

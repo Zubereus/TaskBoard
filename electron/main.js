@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, Notification, dialog, Tray, nativeImage } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, Notification, dialog, Tray, nativeImage, powerMonitor, screen } = require('electron')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -7,8 +7,20 @@ const { completionPatch } = require('../server/task-completion')
 const gcal = require('../server/google-calendar')
 const { LanSyncManager, getLocalIpAddresses, DEFAULT_PORT } = require('../server/lan-sync')
 const { generateTasksDocx } = require('../server/docx-export')
-const { reconcilePersonProfile } = require('../server/person-profile')
-const { isTaskAssignedTo } = require('../server/notification-target')
+const { reconcilePersonProfile, claimLegacyProfile, listClaimableProfiles } = require('../server/person-profile')
+const { isTaskForPerson } = require('../server/notification-target')
+const {
+  planDueNotifications,
+  planNotificationDelivery,
+  summarizeTaskStatus,
+  listOverdueTasks,
+  pruneAcknowledgedKeys,
+  planReturnSummary,
+  buildAgenda,
+  planCornerWidget
+} = require('../server/notification-plan')
+const { createPresenceTracker } = require('../server/presence')
+const { createPopups } = require('./popups')
 
 const isDev = process.env.NODE_ENV === 'development'
 const devTestInstance = isDev && ['host', 'client'].includes(process.env.TASKBOARD_DEVTEST_INSTANCE)
@@ -42,16 +54,6 @@ function vnNowTimeStr() {
     hour12: false,
     hourCycle: 'h23'
   }).format(new Date())
-}
-function daysBetweenVN(aStr, bStr) {
-  const a = aStr && aStr.split('-').map(Number)
-  const b = bStr && bStr.split('-').map(Number)
-  if (!a || !b || a.length !== 3 || b.length !== 3 || a.some(Number.isNaN) || b.some(Number.isNaN)) return null
-  return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000)
-}
-function minutesOf(timeStr) {
-  const [hours, minutes] = String(timeStr).split(':').map(Number)
-  return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : null
 }
 
 const dataDir = devTestInstance
@@ -144,6 +146,14 @@ function ensurePersonProfile() {
   return personProfilePromise.finally(() => {
     personProfilePromise = null
   })
+}
+
+// The checks below run every 30 seconds. They only need the stable ID, so read
+// it from settings instead of re-running the full profile sync (which writes
+// the employees file and broadcasts to every client) each time.
+async function currentPersonId() {
+  const settings = await getSettings()
+  return settings.personId || (await ensurePersonProfile()).personId
 }
 
 async function getTokens() {
@@ -243,6 +253,8 @@ function createWindow() {
   })
 
   mainWindow = win
+  win.on('focus', queuePublishAgenda)
+  win.on('blur', queuePublishAgenda)
 
   win.webContents.on('did-finish-load', () => {
     if (isDev && !win.webContents.isDevToolsOpened()) {
@@ -288,6 +300,7 @@ lanSync.on('data-synced', (data) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('lan:data-sync', data)
   }
+  queueOverdueRefresh()
 })
 
 lanSync.on('chat-message', (message) => {
@@ -314,13 +327,25 @@ lanSync.on('client-connect-failed', async () => {
 })
 
 // Desktop notifications (Vietnam time)
-const notifiedTimedTaskIds = new Set()
-const notifiedReminderIds = new Set()
-let dailySummaryDate = null
 const ALARM_INTERVAL_MS = 60 * 60 * 1000
 const activeNotifications = new Set()
 let isCheckingDueTasks = false
 let notificationStateRecord = null
+// Overdue tasks the person has acknowledged in the overdue panel. Keys include
+// the due date/time, so changing a deadline brings the task back.
+let acknowledgedOverdueKeys = []
+let overdueList = []
+let dueTodayList = []
+// Overdue tasks the person explicitly dismissed from the corner widget.
+let widgetDismissedKeys = []
+let cornerWidgetEnabled = true
+let pendingNotifications = []
+let notificationState = {
+  notifiedTimedTaskIds: [],
+  notifiedReminderIds: [],
+  dailySummaryDate: null,
+  dailySummaryTaskIds: undefined
+}
 
 async function loadNotificationState() {
   const records = await notificationStateStore.list()
@@ -330,18 +355,41 @@ async function loadNotificationState() {
     notifiedReminderIds: [],
     dailySummaryDate: null
   })
-  for (const key of notificationStateRecord.notifiedTimedTaskIds || []) notifiedTimedTaskIds.add(key)
-  for (const key of notificationStateRecord.notifiedReminderIds || []) notifiedReminderIds.add(key)
-  dailySummaryDate = notificationStateRecord.dailySummaryDate || null
+  notificationState = {
+    notifiedTimedTaskIds: notificationStateRecord.notifiedTimedTaskIds || [],
+    notifiedReminderIds: notificationStateRecord.notifiedReminderIds || [],
+    dailySummaryDate: notificationStateRecord.dailySummaryDate || null,
+    dailySummaryTaskIds: Array.isArray(notificationStateRecord.dailySummaryTaskIds)
+      ? notificationStateRecord.dailySummaryTaskIds
+      : undefined
+  }
+  acknowledgedOverdueKeys = pruneAcknowledgedKeys(
+    notificationStateRecord.acknowledgedOverdueKeys || [],
+    vnTodayStr()
+  )
+  widgetDismissedKeys = pruneAcknowledgedKeys(
+    notificationStateRecord.widgetDismissedKeys || [],
+    vnTodayStr()
+  )
+  pendingNotifications = Array.isArray(notificationStateRecord.pendingNotifications)
+    ? notificationStateRecord.pendingNotifications
+    : []
 }
 
-async function saveNotificationState() {
-  if (!notificationStateRecord) return
-  notificationStateRecord = await notificationStateStore.update(notificationStateRecord.id, {
-    notifiedTimedTaskIds: [...notifiedTimedTaskIds],
-    notifiedReminderIds: [...notifiedReminderIds],
-    dailySummaryDate
+async function saveNotificationState(nextState, nextPendingNotifications = pendingNotifications) {
+  if (!notificationStateRecord) {
+    notificationState = nextState
+    pendingNotifications = nextPendingNotifications
+    return
+  }
+  const updated = await notificationStateStore.update(notificationStateRecord.id, {
+    ...nextState,
+    pendingNotifications: nextPendingNotifications
   })
+  if (!updated) throw new Error('Không tìm thấy trạng thái thông báo để lưu.')
+  notificationStateRecord = updated
+  notificationState = nextState
+  pendingNotifications = nextPendingNotifications
 }
 
 function showMainWindow(taskId = null) {
@@ -363,6 +411,7 @@ function showMainWindow(taskId = null) {
 }
 
 function sendAlarmState() {
+  queuePublishAgenda()
   if (mainWindow && !mainWindow.isDestroyed()) {
     alarmStore.list().then((alarms) => mainWindow.webContents.send('alarms:changed', alarms)).catch((err) => {
       console.warn('Could not send alarm state:', err.message)
@@ -378,22 +427,20 @@ async function notifyAlarm(task, alarm) {
     snoozedUntil: null,
     notificationCount: (alarm.notificationCount || 0) + 1
   })
-  const notification = createNotification({
-    title: 'TaskBoard — Báo thức công việc',
-    body: `${task.title} chưa được xác nhận. Bấm để mở TaskBoard và xác nhận.`,
-    urgency: 'critical',
-    timeoutType: 'never'
-  }, () => showMainWindow(task.id))
-  notification.show()
+  if (Notification.isSupported()) {
+    createNotification({
+      title: 'TaskBoard — Báo thức công việc',
+      body: `${task.title} chưa được xác nhận. Bấm để mở TaskBoard và xác nhận.`,
+      urgency: 'critical',
+      timeoutType: 'never'
+    }, () => showMainWindow(task.id)).show()
+  }
   sendAlarmState()
   return updated
 }
 
-async function checkAlarms() {
-  if (!Notification.isSupported()) return
+async function checkAlarms(allTasks) {
   const now = Date.now()
-  const { personId } = await ensurePersonProfile()
-  const allTasks = (await tasks.list()).filter((task) => isTaskAssignedTo(task, personId))
   const alarms = await alarmStore.list()
   const byTaskId = new Map(alarms.map((alarm) => [alarm.taskId, alarm]))
   const today = vnTodayStr()
@@ -433,7 +480,10 @@ async function checkAlarms() {
     if (alarm.snoozedUntil && now < alarm.snoozedUntil) continue
     const snoozeEnded = !!alarm.snoozedUntil
     const hourPassed = !alarm.lastNotifiedAt || now - alarm.lastNotifiedAt >= ALARM_INTERVAL_MS
-    if (snoozeEnded || hourPassed) {
+    // While nobody is at the PC the alarm is kept (it shows in the app) but does
+    // not ring; lastNotifiedAt and any snooze stay as they are, so it rings as
+    // soon as someone is back.
+    if ((snoozeEnded || hourPassed) && !presence.isAway()) {
       await notifyAlarm(task, alarm)
       alarm.lastNotifiedAt = now
     }
@@ -466,62 +516,273 @@ async function snoozeAlarm(taskId, minutes) {
   return updated
 }
 
-async function checkDueTasks() {
-  if (isCheckingDueTasks) return
-  isCheckingDueTasks = true
+function updateTrayStatus(allTasks) {
+  if (!tray) return
+  const { overdue, dueToday } = summarizeTaskStatus({
+    tasks: allTasks,
+    today: vnTodayStr(),
+    nowTime: vnNowTimeStr()
+  })
+  tray.setToolTip(
+    overdue || dueToday ? `TaskBoard — ${overdue} quá hạn · ${dueToday} hôm nay` : 'TaskBoard'
+  )
+}
+
+// ---------- Tray flyout and corner widget ----------
+function loadView(win, view) {
+  if (isDev) win.loadURL(`http://localhost:5173#${view}`)
+  else win.loadFile(path.join(__dirname, '../dist/index.html'), { hash: view })
+}
+
+function getTrayAnchor() {
+  const bounds = tray && !tray.isDestroyed() ? tray.getBounds() : null
+  if (bounds && bounds.width > 0) return bounds
+  const cursor = screen.getCursorScreenPoint()
+  return { x: cursor.x, y: cursor.y, width: 0, height: 0 }
+}
+
+const popups = createPopups({
+  BrowserWindow,
+  screen,
+  preload: path.join(__dirname, 'preload.js'),
+  iconPath: path.join(__dirname, '../build/icon.png'),
+  loadView,
+  getTrayAnchor
+})
+
+function isMainFocused() {
+  return Boolean(mainWindow) && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()
+}
+
+async function loadPopupSettings() {
   try {
-  if (!Notification.isSupported()) return
-  const today = vnTodayStr()
-  const nowTime = vnNowTimeStr()
-  const { personId } = await ensurePersonProfile()
-  const allTasks = (await tasks.list()).filter((task) => isTaskAssignedTo(task, personId))
-  const dueToday = allTasks.filter((t) => !t.done && t.dueDate === today)
-
-  for (const t of allTasks) {
-    if (t.done || !t.dueDate || !Array.isArray(t.reminderDays)) continue
-    const daysUntilDue = daysBetweenVN(today, t.dueDate)
-    if (daysUntilDue === null || !t.reminderDays.includes(daysUntilDue)) continue
-    const key = `${t.id}:reminder:${daysUntilDue}:${t.dueDate}`
-    if (!notifiedReminderIds.has(key)) {
-      notifiedReminderIds.add(key)
-      createNotification({
-        title: 'TaskBoard — Nhắc việc',
-        body: `${t.title} còn ${daysUntilDue} ngày đến hạn.`
-      }).show()
-      await saveNotificationState()
-    }
+    cornerWidgetEnabled = (await getSettings()).cornerWidgetEnabled !== false
+  } catch (err) {
+    console.warn('Không thể đọc cài đặt cửa sổ nhắc việc:', err.message)
   }
+}
 
-  if (dailySummaryDate !== today) {
-    dailySummaryDate = today
-    if (dueToday.length > 0) {
-      createNotification({
-        title: 'TaskBoard — Công việc hôm nay',
-        body: `Bạn có ${dueToday.length} công việc cần hoàn thành hôm nay.`
-      }).show()
-      await saveNotificationState()
-    }
+async function markWidgetSeen(entries) {
+  widgetDismissedKeys = pruneAcknowledgedKeys(
+    [...new Set([...widgetDismissedKeys, ...entries.map((entry) => entry.key)])],
+    vnTodayStr()
+  )
+  if (notificationStateRecord) {
+    notificationStateRecord = await notificationStateStore.update(notificationStateRecord.id, {
+      widgetDismissedKeys
+    })
   }
+}
 
-  for (const t of dueToday) {
-    if (!t.dueTime) continue
-    const key = `${t.id}:${t.dueDate}:${t.dueTime}`
-    const currentMinutes = minutesOf(nowTime)
-    const dueMinutes = minutesOf(t.dueTime)
-    const minutesLate = currentMinutes === null || dueMinutes === null ? -1 : currentMinutes - dueMinutes
-    if (minutesLate >= 0 && minutesLate <= 10 && !notifiedTimedTaskIds.has(key)) {
-      notifiedTimedTaskIds.add(key)
-      createNotification({
-        title: 'TaskBoard — Đến giờ làm việc',
-        body: t.title
-      }).show()
-      await saveNotificationState()
-    }
+function currentWidgetPlan() {
+  return planCornerWidget({
+    overdue: overdueList,
+    dismissedKeys: widgetDismissedKeys,
+    enabled: cornerWidgetEnabled,
+    mainWindowFocused: isMainFocused()
+  })
+}
+
+async function buildAgendaPayload() {
+  const alarms = (await alarmStore.list())
+    .filter((alarm) => !alarm.acknowledgedAt)
+    .map(({ taskId, title }) => ({ taskId, title }))
+  return {
+    alarms,
+    overdue: overdueList,
+    dueToday: dueTodayList,
+    widgetEntries: currentWidgetPlan().entries
   }
-  await checkAlarms()
+}
+
+async function publishAgenda() {
+  popups.push(await buildAgendaPayload())
+  popups.setWidgetVisible(currentWidgetPlan().visible)
+}
+
+function queuePublishAgenda() {
+  publishAgenda().catch((err) => console.warn('Không thể cập nhật cửa sổ nhắc việc:', err.message))
+}
+
+async function dismissWidget() {
+  await markWidgetSeen(overdueList)
+  await publishAgenda()
+  return true
+}
+
+// ---------- Persistent overdue panel ----------
+function sendOverdueState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('overdue:changed', overdueList)
+  }
+}
+
+function applyOverdueList(allTasks) {
+  const agenda = buildAgenda({
+    tasks: allTasks,
+    today: vnTodayStr(),
+    nowTime: vnNowTimeStr(),
+    nowMs: Date.now(),
+    acknowledgedKeys: acknowledgedOverdueKeys
+  })
+  const next = agenda.overdue
+  const changed = JSON.stringify(next.map((entry) => entry.key)) !== JSON.stringify(overdueList.map((entry) => entry.key))
+  overdueList = next
+  dueTodayList = agenda.dueToday
+  if (changed) sendOverdueState()
+  queuePublishAgenda()
+  return next
+}
+
+async function loadPersonTasks() {
+  const personId = await currentPersonId()
+  return (await tasks.list()).filter((task) => isTaskForPerson(task, personId))
+}
+
+async function refreshOverdueNow() {
+  const allTasks = await loadPersonTasks()
+  applyOverdueList(allTasks)
+  updateTrayStatus(allTasks)
+  return overdueList
+}
+
+function queueOverdueRefresh() {
+  refreshOverdueNow().catch((err) => console.warn('Không thể cập nhật danh sách quá hạn:', err.message))
+}
+
+async function acknowledgeOverdue(taskIds) {
+  await refreshOverdueNow()
+  const keys = overdueList.filter((entry) => taskIds.includes(entry.taskId)).map((entry) => entry.key)
+  acknowledgedOverdueKeys = pruneAcknowledgedKeys(
+    [...new Set([...acknowledgedOverdueKeys, ...keys])],
+    vnTodayStr()
+  )
+  if (notificationStateRecord) {
+    notificationStateRecord = await notificationStateStore.update(notificationStateRecord.id, {
+      acknowledgedOverdueKeys
+    })
+  }
+  return refreshOverdueNow()
+}
+
+// ---------- Presence: alarms wait for someone to be at the PC ----------
+// Alarms ring only while the person is at the machine. When it sits idle, locked
+// or asleep, an alarm that comes due is still created (and shows in the app) but
+// stays silent; the first sign of life (mouse move, key press, unlock) rings it.
+// Nothing piles up overnight and nothing is missed in the morning.
+const PRESENCE_POLL_MS = 5 * 1000
+const presence = createPresenceTracker()
+
+async function handleReturn(returned) {
+  try {
+    // Sends queued task notifications and rings any alarm that came due away.
+    const sentNotifications = await checkDueTasks()
+    if (!returned) return
+    const summary = planReturnSummary({
+      overdue: await refreshOverdueNow(),
+      awaySince: returned.awaySince
+    })
+    // The toast is what brings the person to the panel; the window is not forced
+    // to the front, so it cannot steal focus from whatever they start typing.
+    const alreadySummarizedOverdue = sentNotifications.some(
+      ({ title }) => title === 'TaskBoard — Công việc quá hạn'
+    )
+    if (summary && !alreadySummarizedOverdue && Notification.isSupported()) {
+      createNotification(summary).show()
+    }
+  } catch (err) {
+    console.warn('Không thể xử lý khi người dùng quay lại:', err.message)
+  }
+}
+
+async function presenceTick() {
+  const wasAway = presence.isAway()
+  const returned = presence.sampleIdle(powerMonitor.getSystemIdleTime(), Date.now())
+  if (wasAway && !presence.isAway()) await handleReturn(returned)
+}
+
+async function notificationTick() {
+  await checkDueTasks().catch((err) => console.warn('Lỗi kiểm tra thông báo:', err.message))
+}
+
+async function startNotificationLoop() {
+  await loadPopupSettings()
+  // Restore away state before the first notification check, including when
+  // TaskBoard starts while the machine has already been idle overnight.
+  presence.sampleIdle(powerMonitor.getSystemIdleTime(), Date.now())
+  await notificationTick()
+  setInterval(notificationTick, 30 * 1000)
+  // Idle time is cheap to read, so poll it often: the alarm should ring within
+  // seconds of the first mouse movement, not at the next 30-second check.
+  setInterval(presenceTick, PRESENCE_POLL_MS)
+}
+
+function watchPresence() {
+  powerMonitor.on('lock-screen', () => presence.lock(Date.now()))
+  powerMonitor.on('suspend', () => presence.suspend(Date.now()))
+  powerMonitor.on('unlock-screen', () => {
+    const wasAway = presence.isAway()
+    const returned = presence.unlock(Date.now())
+    if (wasAway) handleReturn(returned)
+  })
+  // Timers are unreliable across sleep, so check right away on wake. Alarms stay
+  // silent until there is input or an unlock, since a scheduled wake-up is not a person.
+  powerMonitor.on('resume', () => {
+    checkDueTasks().catch((err) => console.warn('Lỗi kiểm tra thông báo:', err.message))
+  })
+}
+
+let recheckRequested = false
+
+async function checkDueTasks() {
+  if (isCheckingDueTasks) {
+    // e.g. the person just came back while a check was running: run once more
+    // afterwards so a waiting alarm is not delayed until the next tick.
+    recheckRequested = true
+    return []
+  }
+  isCheckingDueTasks = true
+  let sentNotifications = []
+  try {
+    // Personal tasks always target this install; shared tasks need this
+    // install's stable person ID among their assignees.
+    const allTasks = await loadPersonTasks()
+
+    const { notifications, nextState, changed } = planDueNotifications({
+      tasks: allTasks,
+      today: vnTodayStr(),
+      nowTime: vnNowTimeStr(),
+      state: notificationState
+    })
+    const canShowNotifications = Notification.isSupported()
+    const delivery = planNotificationDelivery({
+      pending: pendingNotifications,
+      notifications,
+      defer: presence.isAway() || !canShowNotifications
+    })
+    const pendingChanged = JSON.stringify(delivery.pending) !== JSON.stringify(pendingNotifications)
+    // Persist first so deferred notifications survive restarts and shown ones
+    // are not repeated if the OS toast is dismissed.
+    if (changed || pendingChanged) {
+      await saveNotificationState(nextState, delivery.pending)
+    }
+    if (canShowNotifications) {
+      delivery.notifications.forEach((options) => createNotification(options).show())
+      sentNotifications = delivery.notifications
+    }
+
+    // The in-app alarm panel does not depend on OS toast support.
+    await checkAlarms(allTasks)
+    applyOverdueList(allTasks)
+    updateTrayStatus(allTasks)
   } finally {
     isCheckingDueTasks = false
   }
+  if (recheckRequested) {
+    recheckRequested = false
+    sentNotifications.push(...await checkDueTasks())
+  }
+  return sentNotifications
 }
 
 async function initLanFromSettings() {
@@ -558,22 +819,24 @@ app.whenReady().then(() => {
     { type: 'separator' },
     { label: 'Thoát', click: () => { isQuitting = true; app.quit() } }
   ]))
-  tray.on('double-click', () => showMainWindow())
+  tray.on('click', () => popups.toggleFlyout())
+  tray.on('double-click', () => {
+    popups.hideFlyout()
+    showMainWindow()
+  })
 
   app.on('second-instance', () => {
     showMainWindow()
   })
 
   createWindow()
+  popups.warmUp()
   initLanFromSettings()
 
-  loadNotificationState().then(() => {
-    checkDueTasks()
-    setInterval(checkDueTasks, 30 * 1000)
-  }).catch((err) => {
+  watchPresence()
+  loadNotificationState().then(startNotificationLoop).catch((err) => {
     console.warn('Không thể tải trạng thái thông báo:', err.message)
-    checkDueTasks()
-    setInterval(checkDueTasks, 30 * 1000)
+    startNotificationLoop()
   })
 
   app.on('activate', () => {
@@ -607,9 +870,21 @@ ipcMain.handle('alarms:consumeFocus', () => {
   return taskId
 })
 
+// Completing, editing or deleting a task should update the overdue panel right
+// away instead of waiting for the next 30-second check.
+function handleTaskMutation(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await handler(event, ...args)
+    } finally {
+      queueOverdueRefresh()
+    }
+  })
+}
+
 ipcMain.handle('tasks:list', () => tasks.list())
 
-ipcMain.handle('tasks:add', async (_e, task) => {
+handleTaskMutation('tasks:add', async (_e, task) => {
   if (task.personal) {
     return tasks.insert(task)
   }
@@ -626,7 +901,7 @@ ipcMain.handle('tasks:add', async (_e, task) => {
   return saved
 })
 
-ipcMain.handle('tasks:update', async (_e, id, patch) => {
+handleTaskMutation('tasks:update', async (_e, id, patch) => {
   const existing = await tasks.get(id)
   if (existing?.personal) {
     return tasks.update(id, completionPatch(existing, patch))
@@ -652,7 +927,7 @@ ipcMain.handle('tasks:update', async (_e, id, patch) => {
   return updated
 })
 
-ipcMain.handle('tasks:delete', async (_e, id) => {
+handleTaskMutation('tasks:delete', async (_e, id) => {
   const task = await tasks.get(id)
   let removed
   if (task?.personal) {
@@ -747,7 +1022,75 @@ ipcMain.handle('settings:save', async (_e, patch) => {
     lanSync.notifyHostLocalChange(existing ? 'employees:update' : 'employees:add', profile)
     return saved
   }
-  return saveSettings(patch)
+  const saved = await saveSettings(patch)
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'cornerWidgetEnabled')) {
+    cornerWidgetEnabled = patch.cornerWidgetEnabled !== false
+    queuePublishAgenda()
+  }
+  return saved
+})
+
+// ---------- IPC: tray flyout and corner widget ----------
+ipcMain.handle('agenda:get', () => buildAgendaPayload())
+ipcMain.handle('popup:dismissWidget', () => dismissWidget())
+ipcMain.handle('popup:openMain', () => {
+  popups.hideFlyout()
+  showMainWindow()
+  return true
+})
+
+// ---------- IPC: overdue panel ----------
+ipcMain.handle('overdue:list', () => refreshOverdueNow())
+ipcMain.handle('overdue:acknowledge', (_e, taskId) => acknowledgeOverdue([taskId]))
+ipcMain.handle('overdue:acknowledgeAll', async () => {
+  await refreshOverdueNow()
+  return acknowledgeOverdue(overdueList.map((entry) => entry.taskId))
+})
+
+// ---------- IPC: profile claim (link old employee entries to this device) ----------
+async function adoptDisplayName(name) {
+  await saveSettings({ deviceName: name, profileClaim: 'claimed' })
+  lanSync.setDeviceName(name)
+}
+
+ipcMain.handle('profile:getClaimState', async () => {
+  const { personId } = await ensurePersonProfile()
+  const resolved = (await getSettings()).profileClaim || null
+  return {
+    personId,
+    resolved,
+    candidates: resolved ? [] : await listClaimableProfiles(employees)
+  }
+})
+
+ipcMain.handle('profile:claim', async (_e, legacyId) => {
+  const { personId } = await ensurePersonProfile()
+  let result
+  if (lanSync.mode === 'client') {
+    if (!lanSync.clientConnected) {
+      throw new Error('Cần kết nối máy chủ LAN để nhận hồ sơ cũ.')
+    }
+    // The host owns shared tasks, so it performs the remap and tells everyone.
+    result = await lanSync.sendClientAction('profile:claim', { personId, legacyId })
+    await lanSync.applyProfileClaim(result)
+  } else {
+    result = await claimLegacyProfile(employees, tasks, { personId, legacyId })
+    result.updatedTasks.forEach((task) => lanSync.notifyHostLocalChange('tasks:update', task))
+    result.migratedEmployeeIds.forEach((id) => lanSync.notifyHostLocalChange('employees:delete', { id }))
+    lanSync.notifyHostLocalChange('employees:update', result.employee)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('lan:data-sync', { action: 'profile:claim', result })
+    }
+  }
+  // Keep the display name equal to the claimed entry, otherwise the periodic
+  // name sync would rename the profile back to the device hostname.
+  await adoptDisplayName(result.employee.name)
+  return { name: result.employee.name }
+})
+
+ipcMain.handle('profile:decline', async () => {
+  await saveSettings({ profileClaim: 'declined' })
+  return true
 })
 
 // ---------- IPC: LAN Sync ----------
@@ -817,17 +1160,28 @@ ipcMain.handle('lan:setStandalone', async () => {
 
 // ---------- IPC: DOCX Export ----------
 ipcMain.handle('export:tasksDocx', async (_e, options = {}) => {
-  const { filterTasksForExport } = await import('../server/export-filter.mjs')
-  const allTasks = filterTasksForExport(await tasks.list(), options.scope, options.includeCompleted)
+  const { filterTasksForExport, filterOverdueTasks } = await import('../server/export-filter.mjs')
+  let allTasks = filterTasksForExport(
+    await tasks.list(),
+    options.scope,
+    options.onlyOverdue ? false : options.includeCompleted
+  )
+  if (options.onlyOverdue) {
+    allTasks = filterOverdueTasks(allTasks, vnTodayStr(), vnNowTimeStr())
+  }
   const allEmployees = await employees.list()
-  const scopeLabel = options.scope === 'personal'
-    ? 'Công việc cá nhân'
-    : options.scope === 'shared'
-      ? 'Công việc chung'
-      : 'Tất cả công việc'
+  const scopeLabel = options.onlyOverdue
+    ? 'Công việc quá hạn'
+    : options.scope === 'personal'
+      ? 'Công việc cá nhân'
+      : options.scope === 'shared'
+        ? 'Công việc chung'
+        : 'Tất cả công việc'
   const buffer = await generateTasksDocx(allTasks, allEmployees, {
     scopeLabel,
     onlyPending: false,
+    onlyOverdue: options.onlyOverdue,
+    nowTime: vnNowTimeStr(),
     includeAssigneeBreakdown: options.groupByMember
   })
 

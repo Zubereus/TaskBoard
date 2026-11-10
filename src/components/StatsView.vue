@@ -1,19 +1,49 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { vnTodayStr } from '../utils/vnDate'
+import { vnTodayStr, vnNowTimeStr } from '../utils/vnDate'
 import { calculateStats } from '../utils/stats'
 
 const tasks = ref([])
 const employees = ref([])
+const loadError = ref(false)
+// "Today" and the time of day drive what counts as overdue, and this screen can
+// stay open for days on an always-on PC, so they are refreshed on a timer
+// instead of being read once when the data last changed.
+const clock = ref({ today: vnTodayStr(), time: vnNowTimeStr() })
 let unregisterLanSync = null
+let clockTimer = null
+let loadSeq = 0
 
+// Reads both lists before showing either, and drops a response that a newer
+// request has overtaken, so the cards never mix old tasks with a new employee
+// list (which briefly turns assigned tasks into "unassigned").
 async function load() {
-  tasks.value = await window.api.tasks.list()
-  employees.value = await window.api.employees.list()
+  const seq = loadSeq + 1
+  loadSeq = seq
+  try {
+    const [nextTasks, nextEmployees] = await Promise.all([
+      window.api.tasks.list(),
+      window.api.employees.list()
+    ])
+    if (seq !== loadSeq) return
+    tasks.value = nextTasks
+    employees.value = nextEmployees
+    loadError.value = false
+  } catch (err) {
+    if (seq !== loadSeq) return
+    console.warn('Không tải được dữ liệu thống kê:', err)
+    loadError.value = true
+  }
+}
+
+function tickClock() {
+  const next = { today: vnTodayStr(), time: vnNowTimeStr() }
+  if (next.today !== clock.value.today || next.time !== clock.value.time) clock.value = next
 }
 
 onMounted(() => {
   load()
+  clockTimer = setInterval(tickClock, 30 * 1000)
   if (window.api?.lan?.onDataSync) {
     unregisterLanSync = window.api.lan.onDataSync(() => {
       load()
@@ -23,9 +53,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (unregisterLanSync) unregisterLanSync()
+  clearInterval(clockTimer)
 })
 
-const stats = computed(() => calculateStats(tasks.value, employees.value, vnTodayStr()))
+const stats = computed(() =>
+  calculateStats(tasks.value, employees.value, clock.value.today, clock.value.time)
+)
 const rows = computed(() => stats.value.rows)
 const uniqueCompletedTasks = computed(() => stats.value.uniqueCompletedTasks)
 const completedThisWeek = computed(() => stats.value.completedThisWeek)
@@ -49,6 +82,10 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
     <header class="header">
       <h1>Thống kê</h1>
     </header>
+
+    <p v-if="loadError" class="chart-empty" role="alert">
+      Không tải được dữ liệu thống kê, số liệu bên dưới có thể chưa mới nhất.
+    </p>
 
     <div class="summary">
       <div class="summary-card">
@@ -131,7 +168,7 @@ const maxOpenAssigned = computed(() => Math.max(1, ...workloadRows.value.map((r)
       </div>
     </div>
     <p class="chart-footnote">
-      Chỉ công việc chung được tính vào khối lượng theo người phụ trách. Phần màu đỏ là công việc quá hạn; việc giao cho nhiều người được tính cho từng người.
+      Các thẻ phía trên tính cả việc cá nhân trên máy này; biểu đồ chỉ tính công việc chung theo người phụ trách. Phần màu đỏ là công việc quá hạn; việc giao cho nhiều người được tính cho từng người.
     </p>
   </div>
 </template>
@@ -157,11 +194,6 @@ h1 { font-size: 22px; margin: 0; }
 }
 .summary-value { font-size: 26px; font-weight: 700; color: var(--accent); }
 .summary-label { font-size: 12px; color: var(--text-dim); }
-.stats-note {
-  color: var(--text-dim);
-  font-size: 11px;
-  margin: -16px 0 22px;
-}
 
 .chart {
   background: var(--panel);
@@ -233,11 +265,6 @@ h1 { font-size: 22px; margin: 0; }
   pointer-events: none;
 }
 .completion-fill { background: linear-gradient(90deg, #4A8DDB, #3D7DCB); }
-.chart-footnote {
-  color: var(--text-dim);
-  font-size: 11px;
-  margin: 10px 0 0;
-}
 .chart-empty {
   color: var(--text-dim);
   font-size: 12px;
@@ -245,34 +272,12 @@ h1 { font-size: 22px; margin: 0; }
   padding: 12px 0;
 }
 .chart-footnote {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
+  margin: 12px 0 0;
   color: var(--text-dim);
   font-size: 12px;
-}
-.legend-swatch {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-.legend-swatch.late { background: var(--pri-high); }
-.legend-swatch.open { background: var(--bar-open); margin-left: 8px; }
-.legend-swatch.done { background: var(--accent); margin-left: 8px; }
-.footnote-detail { margin-left: auto; }
-@media (max-width: 560px) {
-  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .bar-line {
-    grid-template-columns: minmax(80px, 1fr) auto;
-    gap: 6px 12px;
-  }
-  .bar-track { grid-column: 1 / -1; grid-row: 2; }
-  .bar-figure { font-size: 11.5px; }
-  .footnote-detail { flex-basis: 100%; margin-left: 0; }
+  line-height: 1.5;
 }
 @media (prefers-reduced-motion: reduce) {
-  .bar-seg { transition: none; }
+  .bar-fill { transition: none; }
 }
 </style>

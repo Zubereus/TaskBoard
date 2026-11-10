@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import net from 'node:net'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { LanSyncManager } from './lan-sync.js'
+import { JsonCollection } from './db.js'
 
 class MemoryCollection {
   constructor(records = []) {
@@ -141,6 +145,79 @@ describe('LAN sync integration', () => {
     client.setDeviceName('Lan A Updated')
     await waitFor(async () => (await host.db.employees.get('person-1'))?.name === 'Lan A Updated')
     expect(await host.db.employees.list()).toHaveLength(1)
+  })
+
+  it('lets a client claim a legacy profile whose name does not match its device name', async () => {
+    const host = new LanSyncManager(createDb(
+      [{ id: 'old-task', assigneeIds: ['legacy-person'] }],
+      [{ id: 'legacy-person', name: 'Nguyễn Văn A', role: 'Dev' }]
+    ))
+    const client = new LanSyncManager(createDb())
+    managers.push(host, client)
+    const port = await findFreePort()
+    client.setClientIdentity('person-1')
+    client.setDeviceName('DESKTOP-9KQ2')
+
+    await host.startHost(port)
+    await client.startClient('127.0.0.1', port, false)
+    await waitFor(async () => (await client.db.employees.get('person-1'))?.name === 'DESKTOP-9KQ2')
+    // Name differs, so the automatic migration leaves the task orphaned.
+    expect((await host.db.tasks.get('old-task')).assigneeIds).toEqual(['legacy-person'])
+
+    const result = await client.sendClientAction('profile:claim', {
+      personId: 'person-1',
+      legacyId: 'legacy-person'
+    })
+    await client.applyProfileClaim(result)
+
+    expect((await host.db.tasks.get('old-task')).assigneeIds).toEqual(['person-1'])
+    expect(await host.db.employees.get('legacy-person')).toBeNull()
+    expect(await host.db.employees.get('person-1')).toMatchObject({ name: 'Nguyễn Văn A', role: 'Dev' })
+    expect((await client.db.tasks.get('old-task')).assigneeIds).toEqual(['person-1'])
+    expect(await client.db.employees.get('legacy-person')).toBeNull()
+    expect(await client.db.employees.get('person-1')).toMatchObject({ name: 'Nguyễn Văn A' })
+
+    await expect(
+      client.sendClientAction('profile:claim', { personId: 'person-1', legacyId: 'legacy-person' })
+    ).rejects.toThrow('đã được người khác nhận')
+  })
+
+  it('delivers every task when the host sends a burst of changes to a file-backed client', async () => {
+    // Regression: with real file storage the client applied events concurrently,
+    // each reading then rewriting tasks.json, so most of a burst was lost.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'taskboard-burst-'))
+    try {
+      const hostDb = createDb()
+      const clientDb = {
+        tasks: new JsonCollection(dir, 'tasks'),
+        employees: new JsonCollection(dir, 'employees')
+      }
+      const host = new LanSyncManager(hostDb)
+      const client = new LanSyncManager(clientDb)
+      managers.push(host, client)
+      const port = await findFreePort()
+      client.setClientIdentity('person-1')
+
+      await host.startHost(port)
+      await client.startClient('127.0.0.1', port, false)
+      await waitFor(async () => (await clientDb.employees.list()).length > 0)
+
+      const ids = Array.from({ length: 10 }, (_, i) => `burst-${i}`)
+      for (const id of ids) {
+        const saved = await hostDb.tasks.insert({ id, title: id, assigneeIds: ['person-1'] })
+        host.notifyHostLocalChange('tasks:add', saved)
+      }
+      await waitFor(async () => (await clientDb.tasks.list()).length === ids.length)
+      expect((await clientDb.tasks.list()).map((task) => task.id).sort()).toEqual([...ids].sort())
+
+      // an update burst for the same tasks must also land completely
+      for (const id of ids) {
+        host.notifyHostLocalChange('tasks:update', await hostDb.tasks.update(id, { title: `${id}-edited` }))
+      }
+      await waitFor(async () => (await clientDb.tasks.list()).every((task) => task.title.endsWith('-edited')))
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('allows client task creation and completion but rejects edits and deletes', async () => {

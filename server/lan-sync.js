@@ -3,9 +3,15 @@ const dgram = require('dgram')
 const os = require('os')
 const EventEmitter = require('events')
 const { completionPatch } = require('./task-completion')
-const { reconcilePersonProfile } = require('./person-profile')
+const { reconcilePersonProfile, claimLegacyProfile } = require('./person-profile')
 
 const DEFAULT_PORT = 22236
+
+// File-backed collections expose `exclusive` to serialise read-modify-write
+// sequences; the in-memory ones used in tests do not need it.
+function exclusively(collection, work) {
+  return typeof collection.exclusive === 'function' ? collection.exclusive(work) : work()
+}
 const DISCOVERY_PORT = 22237
 const MAX_CLIENT_CONNECT_ATTEMPTS = 3
 
@@ -554,6 +560,11 @@ class LanSyncManager extends EventEmitter {
         )
         return await this.db.employees.remove(payload.id)
       }
+      case 'profile:claim':
+        return await claimLegacyProfile(this.db.employees, this.db.tasks, {
+          personId: payload?.personId,
+          legacyId: payload?.legacyId
+        })
       default:
         throw new Error(`Hành động không hợp lệ: ${action}`)
     }
@@ -883,11 +894,13 @@ class LanSyncManager extends EventEmitter {
       this.availableClients = Array.isArray(msg.clients) ? msg.clients : []
       this.emitStatus()
       if (Array.isArray(msg.tasks)) {
-        const localTasks = (await this.db.tasks.list()).filter((task) => task.personal)
-        await this.db.tasks._write([...msg.tasks.filter((task) => !task.personal), ...localTasks])
+        await exclusively(this.db.tasks, async () => {
+          const localTasks = (await this.db.tasks.list()).filter((task) => task.personal)
+          await this.db.tasks._write([...msg.tasks.filter((task) => !task.personal), ...localTasks])
+        })
       }
       if (Array.isArray(msg.employees)) {
-        await this.db.employees._write(msg.employees)
+        await exclusively(this.db.employees, () => this.db.employees._write(msg.employees))
       }
       if (Array.isArray(msg.chatMessages)) {
         this.chatMessages = msg.chatMessages.slice(-100)
@@ -962,38 +975,77 @@ class LanSyncManager extends EventEmitter {
         case 'tasks:update': {
           if (!data || !data.id) return
           if (data.personal) return
-          const all = await this.db.tasks.list()
-          const idx = all.findIndex((t) => t.id === data.id)
-          if (idx >= 0) all[idx] = data
-          else all.push(data)
-          await this.db.tasks._write(all)
+          await exclusively(this.db.tasks, async () => {
+            const all = await this.db.tasks.list()
+            const idx = all.findIndex((t) => t.id === data.id)
+            if (idx >= 0) all[idx] = data
+            else all.push(data)
+            await this.db.tasks._write(all)
+          })
           break
         }
         case 'tasks:delete': {
-          const all = await this.db.tasks.list()
-          if (all.some((task) => task.id === (data.id || data) && task.personal)) return
-          await this.db.tasks._write(all.filter((t) => t.id !== data.id && t.id !== data))
+          await exclusively(this.db.tasks, async () => {
+            const all = await this.db.tasks.list()
+            if (all.some((task) => task.id === (data.id || data) && task.personal)) return
+            await this.db.tasks._write(all.filter((t) => t.id !== data.id && t.id !== data))
+          })
           break
         }
         case 'employees:add':
         case 'employees:update': {
           if (!data || !data.id) return
-          const all = await this.db.employees.list()
-          const idx = all.findIndex((e) => e.id === data.id)
-          if (idx >= 0) all[idx] = data
-          else all.push(data)
-          await this.db.employees._write(all)
+          await exclusively(this.db.employees, async () => {
+            const all = await this.db.employees.list()
+            const idx = all.findIndex((e) => e.id === data.id)
+            if (idx >= 0) all[idx] = data
+            else all.push(data)
+            await this.db.employees._write(all)
+          })
           break
         }
         case 'employees:delete': {
-          const all = await this.db.employees.list()
-          await this.db.employees._write(all.filter((e) => e.id !== data.id && e.id !== data))
+          await exclusively(this.db.employees, async () => {
+            const all = await this.db.employees.list()
+            await this.db.employees._write(all.filter((e) => e.id !== data.id && e.id !== data))
+          })
+          break
+        }
+        case 'profile:claim': {
+          if (!data?.employee) return
+          const migrated = data.migratedEmployeeIds || []
+          const updatedById = new Map(
+            (data.updatedTasks || []).filter((task) => task && !task.personal).map((task) => [task.id, task])
+          )
+          if (updatedById.size > 0) {
+            await exclusively(this.db.tasks, async () => {
+              const allTasks = await this.db.tasks.list()
+              await this.db.tasks._write(allTasks.map((task) => updatedById.get(task.id) || task))
+            })
+          }
+          await exclusively(this.db.employees, async () => {
+            const kept = (await this.db.employees.list()).filter((person) => !migrated.includes(person.id))
+            await this.db.employees._write(
+              kept.some((person) => person.id === data.employee.id)
+                ? kept.map((person) => (person.id === data.employee.id ? data.employee : person))
+                : [...kept, data.employee]
+            )
+          })
           break
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      // A failed sync event must not break the connection, but it should not
+      // vanish silently either: a lost task is exactly what this would hide.
+      console.warn(`Không thể áp dụng sự kiện đồng bộ "${action}":`, err.message)
     }
+  }
+
+  // Applies the host's answer to a profile claim made by this client. Other
+  // clients receive the same payload as a broadcast event.
+  async applyProfileClaim(result) {
+    await this._applyRemoteEvent('profile:claim', result)
+    this.emit('data-synced', { action: 'profile:claim', result })
   }
 
   async sendClientAction(action, payload) {

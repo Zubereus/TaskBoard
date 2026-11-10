@@ -5,10 +5,17 @@ import { normalizeRecurring } from '../utils/vnDate'
 import { normalizeReminderDays } from '../utils/taskWorkflow'
 import { tagColorFor } from '../utils/tagColor'
 
-const props = defineProps({ task: Object, calendarConnected: Boolean, employees: Array })
+const props = defineProps({ task: Object, calendarConnected: Boolean, employees: Array, selfId: String })
 const emit = defineEmits(['save', 'close'])
 
 const form = ref(blankForm())
+
+// Put this device's own profile first and mark it, so people pick themselves
+// instead of an older entry that happens to carry their name.
+const orderedEmployees = computed(() => {
+  const all = props.employees || []
+  return [...all.filter((e) => e.id === props.selfId), ...all.filter((e) => e.id !== props.selfId)]
+})
 
 // Native range inputs fill their track up to the thumb's *center*, but the
 // thumb itself has width — so even at max value there's always a visible
@@ -140,13 +147,13 @@ function submit() {
       <label>Giao cho (có thể chọn nhiều người)</label>
       <div v-if="employees.length === 0" class="no-employees">Chưa có thành viên nào. Thêm ở tab “Nhóm”.</div>
       <div v-else class="assignee-list">
-        <label v-for="e in employees" :key="e.id" class="assignee-item">
+        <label v-for="e in orderedEmployees" :key="e.id" class="assignee-item">
           <input
             type="checkbox"
             :checked="form.assigneeIds.includes(e.id)"
             @change="toggleAssignee(e.id)"
           />
-          {{ e.name }}
+          {{ e.name }}<span v-if="e.id === selfId" class="self-tag"> (Bạn)</span>
         </label>
       </div>
 
@@ -290,6 +297,7 @@ textarea { resize: vertical; }
   margin: 0;
 }
 .assignee-item input { width: auto; }
+.self-tag { color: var(--text-dim); font-weight: 600; }
 
 /* Custom range slider: the fill color comes entirely from the inline
    gradient background bound to priorityTrackStyle, so we strip the

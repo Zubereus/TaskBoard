@@ -9,7 +9,6 @@ const tempDirs = []
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
 })
-
 describe('JsonCollection task and member storage', () => {
   it('creates and persists a task with a generated id', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'taskboard-test-'))
@@ -42,5 +41,54 @@ describe('JsonCollection task and member storage', () => {
     const tasks = new JsonCollection(dir, 'tasks')
 
     await expect(tasks.list()).rejects.toThrow('Tệp dữ liệu bị lỗi')
+  })
+})
+
+describe('JsonCollection concurrent writes', () => {
+  async function collection() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'taskboard-test-'))
+    tempDirs.push(dir)
+    return new JsonCollection(dir, 'tasks')
+  }
+
+  it('keeps every record when many inserts run at the same time', async () => {
+    const tasks = await collection()
+    await Promise.all(Array.from({ length: 25 }, (_, i) => tasks.insert({ id: `t${i}`, title: `Task ${i}` })))
+    expect(await tasks.list()).toHaveLength(25)
+  })
+
+  it('does not lose an update that runs alongside inserts', async () => {
+    const tasks = await collection()
+    await tasks.insert({ id: 'keep', title: 'old', done: false })
+    await Promise.all([
+      tasks.insert({ id: 'a', title: 'A' }),
+      tasks.update('keep', { done: true }),
+      tasks.insert({ id: 'b', title: 'B' }),
+      tasks.remove('a')
+    ])
+    const ids = (await tasks.list()).map((task) => task.id).sort()
+    expect(ids).toEqual(['b', 'keep'])
+    expect(await tasks.get('keep')).toMatchObject({ done: true })
+  })
+
+  it('applies exclusive work in order and keeps going after one fails', async () => {
+    const tasks = await collection()
+    const order = []
+    const first = tasks.exclusive(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      order.push('first')
+    })
+    const failing = tasks.exclusive(async () => {
+      order.push('failing')
+      throw new Error('boom')
+    })
+    const last = tasks.exclusive(async () => {
+      order.push('last')
+      return 'done'
+    })
+    await first
+    await expect(failing).rejects.toThrow('boom')
+    await expect(last).resolves.toBe('done')
+    expect(order).toEqual(['first', 'failing', 'last'])
   })
 })

@@ -511,6 +511,10 @@ async function generateTasksDocx(tasks = [], employees = [], options = {}) {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date())
+  const isOverdue = (task) => task.dueDate && (
+    task.dueDate < today
+    || (options.onlyOverdue && task.dueDate === today && task.dueTime && task.dueTime <= options.nowTime)
+  )
 
   const byPriority = (a, b) => (b.priority ?? 0) - (a.priority ?? 0)
   const pick = (test) => list.filter(test).sort(byPriority)
@@ -523,7 +527,7 @@ async function generateTasksDocx(tasks = [], employees = [], options = {}) {
       .filter(Boolean)
       .join(', '),
     due: dueText(task),
-    dueTone: task.dueDate && task.dueDate < today && !task.done
+    dueTone: isOverdue(task) && !task.done
       ? 'overdue'
       : task.dueDate === today
         ? 'today'
@@ -535,8 +539,8 @@ async function generateTasksDocx(tasks = [], employees = [], options = {}) {
   })
 
   const sections = [
-    { key: 'overdue', title: 'Quá hạn', tone: 'overdue', items: pick((task) => task.dueDate && task.dueDate < today && !task.done).map(toItem) },
-    { key: 'today', title: 'Hôm nay', tone: 'today', items: pick((task) => task.dueDate === today).map(toItem) },
+    { key: 'overdue', title: 'Quá hạn', tone: 'overdue', items: pick((task) => isOverdue(task) && !task.done).map(toItem) },
+    { key: 'today', title: 'Hôm nay', tone: 'today', items: pick((task) => task.dueDate === today && !isOverdue(task)).map(toItem) },
     { key: 'upcoming', title: 'Sắp tới', tone: 'normal', items: pick((task) => task.dueDate && task.dueDate > today).map(toItem) },
     { key: 'nodate', title: 'Chưa hẹn ngày', tone: 'normal', items: pick((task) => !task.dueDate).map(toItem) }
   ]

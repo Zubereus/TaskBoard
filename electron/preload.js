@@ -24,6 +24,33 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('alarms:focus', listener)
     }
   },
+  agenda: {
+    get: () => ipcRenderer.invoke('agenda:get'),
+    onChanged: (callback) => {
+      const listener = (_e, payload) => callback(payload)
+      ipcRenderer.on('agenda:changed', listener)
+      return () => ipcRenderer.removeListener('agenda:changed', listener)
+    }
+  },
+  popup: {
+    openMain: () => ipcRenderer.invoke('popup:openMain'),
+    dismissWidget: () => ipcRenderer.invoke('popup:dismissWidget')
+  },
+  overdue: {
+    list: () => ipcRenderer.invoke('overdue:list'),
+    acknowledge: (taskId) => ipcRenderer.invoke('overdue:acknowledge', taskId),
+    acknowledgeAll: () => ipcRenderer.invoke('overdue:acknowledgeAll'),
+    onChanged: (callback) => {
+      const listener = (_e, list) => callback(list)
+      ipcRenderer.on('overdue:changed', listener)
+      return () => ipcRenderer.removeListener('overdue:changed', listener)
+    }
+  },
+  profile: {
+    getClaimState: () => ipcRenderer.invoke('profile:getClaimState'),
+    claim: (legacyId) => ipcRenderer.invoke('profile:claim', legacyId),
+    decline: () => ipcRenderer.invoke('profile:decline')
+  },
   employees: {
     list: () => ipcRenderer.invoke('employees:list'),
     add: (employee) => ipcRenderer.invoke('employees:add', employee),

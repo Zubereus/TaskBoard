@@ -6,6 +6,7 @@ import SegmentedControl from './SegmentedControl.vue'
 import ToggleSwitch from './ToggleSwitch.vue'
 import {
   vnTodayStr,
+  vnNowTimeStr,
   currentWeekDatesVN,
   vnWeekdayHeader,
   daysBetween,
@@ -30,6 +31,7 @@ const emit = defineEmits(['open-chat'])
 
 const tasks = ref([])
 const employees = ref([])
+const selfId = ref('')
 const calendarStatus = ref({ configured: false, connected: false })
 const showForm = ref(false)
 const editingTask = ref(null)
@@ -57,15 +59,23 @@ const clockTick = ref(0)
 const showExportModal = ref(false)
 const exportScope = ref('all')
 const exportIncludeCompleted = ref(false)
+const exportOnlyOverdue = ref(false)
 const exportGroupByMember = ref(false)
-const exportTaskCount = ref(0)
-const countingExportTasks = ref(false)
+const tasksLoaded = ref(false)
+const exportTaskCount = computed(() => {
+  if (!tasksLoaded.value) return 0
+  clockTick.value
+  return countTasksForExport(tasks.value, exportScope.value, exportIncludeCompleted.value, {
+    onlyOverdue: exportOnlyOverdue.value,
+    today: vnTodayStr(),
+    nowTime: vnNowTimeStr()
+  })
+})
 const exporting = ref(false)
 const exportSuccessToast = ref(null)
 const exportModal = ref(null)
 const exportScopeControl = ref(null)
 let exportSuccessTimer = null
-let exportCountRequestId = 0
 let exportTrigger = null
 
 // Real-time LAN sync unsubscribe
@@ -75,20 +85,23 @@ watch(exportScope, (scope) => {
   exportGroupByMember.value = groupByMemberForScope(scope, exportGroupByMember.value)
 })
 
-watch([tasks, exportScope, exportIncludeCompleted], refreshExportTaskCount, { deep: true, immediate: true })
+watch(exportOnlyOverdue, (onlyOverdue) => {
+  if (onlyOverdue) exportIncludeCompleted.value = false
+})
 
 watch(showExportModal, async (isOpen) => {
   if (!isOpen) return
   await nextTick()
   exportScopeControl.value?.focus()
-  refreshExportTaskCount()
 })
 
 async function load() {
   try {
     tasks.value = await window.api.tasks.list()
+    tasksLoaded.value = true
     employees.value = await window.api.employees.list()
     calendarStatus.value = await window.api.calendar.status()
+    selfId.value = (await window.api.lan.getStatus()).personId || ''
   } catch (err) {
     console.warn('Load tasks error:', err)
     flash('Không thể tải dữ liệu công việc.', true, errorDetail(err))
@@ -117,23 +130,6 @@ onUnmounted(() => {
   if (bannerTimer) clearTimeout(bannerTimer)
   if (exportSuccessTimer) clearTimeout(exportSuccessTimer)
 })
-
-async function refreshExportTaskCount() {
-  exportCountRequestId = exportCountRequestId + 1
-  const requestId = exportCountRequestId
-  countingExportTasks.value = true
-  try {
-    const localTasks = await window.api.tasks.list()
-    const count = countTasksForExport(localTasks, exportScope.value, exportIncludeCompleted.value)
-    if (requestId === exportCountRequestId) exportTaskCount.value = count
-  } catch (err) {
-    if (requestId === exportCountRequestId) {
-      flash('Không thể đếm công việc để xuất.', true, errorDetail(err))
-    }
-  } finally {
-    if (requestId === exportCountRequestId) countingExportTasks.value = false
-  }
-}
 
 function openExportDialog(event) {
   exportTrigger = event.currentTarget
@@ -431,7 +427,8 @@ async function runDocxExport() {
     const res = await window.api.export.tasksDocx({
       scope: exportScope.value,
       includeCompleted: exportIncludeCompleted.value,
-      groupByMember: exportGroupByMember.value
+      groupByMember: exportGroupByMember.value,
+      onlyOverdue: exportOnlyOverdue.value
     })
     if (res && !res.canceled && res.filePath) {
       showExportModal.value = false
@@ -582,6 +579,7 @@ async function openExportedFile(filePath) {
       :task="editingTask"
       :calendar-connected="calendarStatus.connected"
       :employees="employees"
+      :self-id="selfId"
       @save="handleSave"
       @close="showForm = false"
     />
@@ -654,8 +652,32 @@ async function openExportedFile(filePath) {
             <div class="export-switch-row">
               <div class="export-switch-copy">
                 <span id="include-completed-label" class="export-switch-label">Bao gồm việc đã hoàn thành</span>
+                <span id="include-completed-hint" class="export-switch-hint">
+                  {{ exportOnlyOverdue ? 'Không áp dụng khi chỉ xuất việc quá hạn' : 'Bao gồm các việc đã hoàn tất trong báo cáo.' }}
+                </span>
               </div>
-              <ToggleSwitch v-model="exportIncludeCompleted" labelledby="include-completed-label" />
+              <ToggleSwitch
+                v-model="exportIncludeCompleted"
+                :disabled="exportOnlyOverdue"
+                labelledby="include-completed-label"
+                describedby="include-completed-hint"
+              />
+            </div>
+          </section>
+
+          <section class="export-group">
+            <div class="export-switch-row">
+              <div class="export-switch-copy">
+                <span id="export-only-overdue-label" class="export-switch-label">Chỉ xuất công việc đã quá hạn</span>
+                <span id="export-only-overdue-hint" class="export-switch-hint">
+                  Việc chưa hoàn thành, đã quá ngày hạn hoặc đã qua giờ hạn hôm nay.
+                </span>
+              </div>
+              <ToggleSwitch
+                v-model="exportOnlyOverdue"
+                labelledby="export-only-overdue-label"
+                describedby="export-only-overdue-hint"
+              />
             </div>
           </section>
 
@@ -681,7 +703,7 @@ async function openExportedFile(filePath) {
         </div>
 
         <p class="export-count" role="status" aria-live="polite">
-          <template v-if="countingExportTasks">Đang đếm công việc...</template>
+          <template v-if="!tasksLoaded">Đang tải công việc...</template>
           <template v-else-if="exportTaskCount === 0">Không có công việc nào để xuất</template>
           <template v-else>Sẽ xuất {{ exportTaskCount }} công việc</template>
         </p>
@@ -692,7 +714,7 @@ async function openExportedFile(filePath) {
           </button>
           <button
             class="btn btn-primary"
-            :disabled="exportButtonDisabled(exportTaskCount, exporting, countingExportTasks)"
+            :disabled="exportButtonDisabled(exportTaskCount, exporting, !tasksLoaded)"
             @click="runDocxExport"
           >
             {{ exporting ? 'Đang tạo tệp...' : 'Lưu tệp Word' }}
